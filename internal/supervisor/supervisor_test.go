@@ -83,7 +83,7 @@ func TestBuildArgs(t *testing.T) {
 	if !strings.Contains(argsStr, "--cache-type-k q4_0") {
 		t.Errorf("missing cache-type-k: %s", argsStr)
 	}
-	if !strings.Contains(argsStr, "--flash-attn") {
+	if !strings.Contains(argsStr, "--flash-attn on") {
 		t.Errorf("missing flash-attn: %s", argsStr)
 	}
 	if !strings.Contains(argsStr, "-md /models/mtp.gguf") {

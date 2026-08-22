@@ -99,8 +99,8 @@ func (s *Supervisor) BuildArgs(m *db.Model, p *db.Profile, port int) []string {
 	if p.KVType != "" {
 		args = append(args, "--cache-type-k", p.KVType, "--cache-type-v", p.KVType)
 	}
-	if p.FlashAttn == "on" || p.FlashAttn == "auto" {
-		args = append(args, "--flash-attn")
+	if p.FlashAttn != "" {
+		args = append(args, "--flash-attn", p.FlashAttn)
 	}
 	if p.UseMTP && m.MTPPath != "" {
 		args = append(args, "-md", m.MTPPath)
