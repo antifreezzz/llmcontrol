@@ -1,0 +1,16 @@
+[Unit]
+Description=ESP32 Display Host Telemetry and LLM Bridge
+After=network.target llmcontrol.service
+
+[Service]
+Type=simple
+WorkingDirectory=/home/antifreezzz/orca/projects/minimaxdumbtest
+ExecStart=/usr/bin/python3 /home/antifreezzz/orca/projects/minimaxdumbtest/host/host.py
+Restart=always
+RestartSec=5s
+Environment=PYTHONUNBUFFERED=1
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=default.target

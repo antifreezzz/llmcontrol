@@ -1,0 +1,16 @@
+[Unit]
+Description=LLM Control - Inference Manager and Web UI
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/antifreezzz/Documents/projects/llmcontrol
+ExecStart=/home/antifreezzz/Documents/projects/llmcontrol/llmctl daemon -config /home/antifreezzz/Documents/projects/llmcontrol/config.json
+Restart=on-failure
+RestartSec=3s
+Environment=PATH=/home/antifreezzz/.local/bin:/usr/local/bin:/usr/bin:/bin
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=default.target

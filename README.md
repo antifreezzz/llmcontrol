@@ -1,61 +1,76 @@
 # LLM Control Center (`llmcontrol`)
 
-⚡ **LLM Control Center** — легковесный (~10–15 MB RAM) системный менеджер и CLI-утилита на Go для управления жизненным циклом локальных LLM (Vulkan / SYCL `llama-server`).
+[![Go Version](https://img.shields.io/badge/Go-1.22+-00ADD8?style=flat&logo=go)](https://go.dev/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![Architecture: Pure Go + SQLite](https://img.shields.io/badge/Database-SQLite_(Pure_Go)-003B57?style=flat&logo=sqlite)](https://modernc.org/sqlite)
 
-Объединяет управление моделями, профилями инференса, бенчмаркингом и мониторингом ресурсов в единый интерфейс:
-- 📱 **Telegram Bot** (отказоустойчивое inline-меню, защита от зависаний кнопок, доступ только для владельца).
-- 🌐 **Встроенный Web UI** (Single-page dark dashboard на `http://localhost:8666` без Node.js / npm).
-- 🤖 **Встроенный MCP Server** (Model Context Protocol по stdio для управления моделями через Claude, Cursor, Antigravity).
-- 🔌 **REST API & SSE** (легкая интеграция с внешними проектами, например настольными дисплеями ESP32).
-- 💾 **Чистый SQLite** (без внешних зависимостей и CGO).
+⚡ **LLM Control Center** — lightweight (~10–15 MB RAM), high-performance process supervisor, web dashboard, and CLI tool written in Go for managing local LLM inference engines (Vulkan / Intel SYCL / CPU `llama-server`).
 
----
-
-## Быстрый старт
-
-### 1. Сборка
-```bash
-go build -o llmctl ./cmd/llmctl
-```
-
-### 2. Импорт существующих скриптов из `~/bin`
-Если у вас уже есть bash-скрипты запуска моделей (`gemma4-start`, `cyber-start` и т.д.):
-```bash
-./llmctl import ~/bin
-```
-
-### 3. Просмотр списка моделей
-```bash
-./llmctl list
-```
-
-### 4. Управление моделями
-```bash
-# Запуск модели с профилем
-./llmctl start gemma4 --profile fast
-
-# Запуск быстрого теста скорости (tok/s)
-./llmctl bench gemma4
-
-# Просмотр логов
-./llmctl logs gemma4 -n 50
-
-# Остановка
-./llmctl stop gemma4
-./llmctl stop --all
-```
-
-### 5. Запуск фонового демона (Web UI + Telegram Bot + REST API)
-```bash
-./llmctl daemon
-```
-Веб-интерфейс будет доступен по адресу: **`http://localhost:8666`**
+Provides a unified control hub across multiple interfaces:
+- 🌐 **Embedded Web UI**: Single-page dark cyberpunk dashboard on `http://localhost:8666` (zero npm / node dependencies).
+- 📱 **Telegram Bot**: Resilient inline menu, real-time status reporting, and admin-authenticated remote controls.
+- 🤖 **Model Context Protocol (MCP) Server**: Native stdio MCP server for agentic AI IDEs (Claude Desktop, Cursor, Antigravity).
+- 📟 **ESP32 Touch Display Bridge**: Real-time telemetry, model switcher, and profile selector for desk displays (e.g. ESP32-4848S040).
+- 📊 **Resource & Hardware Telemetry**: Real-time VRAM (Intel Arc A770, etc.), RAM, CPU, GPU temperature, and token speed (TPS).
+- 💾 **Pure Go SQLite Storage**: Zero CGO dependencies, self-contained binary.
 
 ---
 
-## Настройка Telegram-бота
+## 🏗️ Architecture Overview
 
-Скопируйте `config.example.json` в `~/.llmcontrol/config.json`:
+```mermaid
+flowchart TD
+    subgraph Interfaces
+        Web[Web Dashboard :8666]
+        TG[Telegram Bot]
+        MCP[MCP Server / AI Agents]
+        ESP[ESP32 Touch Display UART0]
+        CLI[CLI Utility `llmctl`]
+    end
+
+    subgraph LLMControl Core
+        API[REST API & Web Server]
+        Supervisor[Inference Process Supervisor]
+        DB[(Pure Go SQLite DB)]
+        SysMon[Hardware & VRAM Monitor]
+    end
+
+    subgraph Backends
+        VK[llama-server Vulkan]
+        SYCL[llama-server Intel SYCL]
+    end
+
+    Web --> API
+    TG --> Supervisor
+    MCP --> Supervisor
+    ESP --> API
+    CLI --> Supervisor
+
+    API --> Supervisor
+    Supervisor --> DB
+    Supervisor --> SysMon
+    Supervisor -->|spawn & manage| VK
+    Supervisor -->|spawn & manage| SYCL
+```
+
+---
+
+## 🚀 Quick Start
+
+### 1. Build from Source
+```bash
+git clone https://github.com/antifreezzz/llmcontrol.git
+cd llmcontrol
+make build
+# or: go build -o llmctl ./cmd/llmctl
+```
+
+### 2. Configuration
+Copy the example config:
+```bash
+cp config.example.json config.json
+```
+Edit `config.json`:
 ```json
 {
   "http_host": "0.0.0.0",
@@ -63,31 +78,103 @@ go build -o llmctl ./cmd/llmctl
   "db_path": "~/.llmcontrol/llmcontrol.db",
   "log_dir": "~/.llmcontrol/logs",
   "exclusive_mode": true,
-  "telegram_token": "ВАШ_ТОКЕН_БОТА",
-  "telegram_admin_id": ВАШ_TELEGRAM_USER_ID
+  "telegram_token": "YOUR_TELEGRAM_BOT_TOKEN",
+  "telegram_admin_id": 123456789
 }
+```
+
+### 3. Import Existing Shell Scripts (Optional)
+If you already have shell scripts launching models:
+```bash
+./llmctl import ~/bin
+```
+
+### 4. CLI Usage
+```bash
+# List all configured models and their status
+./llmctl list
+
+# Start a model with a profile (e.g., fast, long, max)
+./llmctl start gemma4 --profile fast
+
+# Benchmark token generation speed (tok/s)
+./llmctl bench gemma4
+
+# View model runtime logs
+./llmctl logs gemma4 -n 50
+
+# Stop models
+./llmctl stop gemma4
+./llmctl stop --all
+```
+
+### 5. Running the Background Daemon
+```bash
+./llmctl daemon -config config.json
+```
+Open **`http://localhost:8666`** in your browser.
+
+---
+
+## ⚙️ Systemd Service (Autostart on Boot)
+
+To run `llmcontrol` as a persistent background user service:
+```bash
+make install-service
+systemctl --user enable --now llmcontrol
+```
+
+Check status or logs:
+```bash
+systemctl --user status llmcontrol
+journalctl --user -u llmcontrol -f
 ```
 
 ---
 
-## Подключение как MCP-сервер в ИИ-ассистентах
+## 🌐 REST API Reference
 
-В конфигурацию MCP (например, Claude Desktop или Cursor):
+| Method | Endpoint | Description |
+|---|---|---|
+| `GET` | `/api/status` | Current active model, TPS, VRAM, RAM, CPU usage |
+| `GET` | `/api/models` | List all models, profiles, and runtime status |
+| `POST` | `/api/models` | Create a new model configuration |
+| `PUT` | `/api/models/:id` | Update model properties and profiles |
+| `DELETE` | `/api/models/:id` | Delete a model |
+| `POST` | `/api/models/:id/start` | Start model (`{"profile":"fast"}`) |
+| `POST` | `/api/models/:id/stop` | Stop specific model |
+| `POST` | `/api/models/stop-all` | Stop all active inference processes |
+| `POST` | `/api/models/:id/benchmark` | Run automated token speed test |
+| `POST` | `/api/models/:id/profiles` | Create or update an inference profile |
+| `DELETE` | `/api/models/:id/profiles/:name` | Delete a profile |
+
+---
+
+## 🤖 Model Context Protocol (MCP)
+
+Add `llmcontrol` as an MCP tool provider to Claude Desktop or Cursor:
+
 ```json
 {
   "mcpServers": {
     "llmcontrol": {
-      "command": "/путь/к/llmctl",
+      "command": "/absolute/path/to/llmctl",
       "args": ["mcp"]
     }
   }
 }
 ```
 
+Available MCP Tools:
+- `list_models`: Returns all configured models and their status.
+- `start_model`: Starts a model with an optional profile name.
+- `stop_all_models`: Immediately terminates running inference servers.
+- `get_system_status`: Inspects active model, TPS, and VRAM / RAM metrics.
+- `benchmark_model`: Runs a benchmark evaluation.
+
 ---
 
-## Интеграция с ESP32-дисплеем (REST API)
+## 📜 License
 
-* `GET http://localhost:8666/api/status` — возвращает JSON с активной моделью, скоростью `tok/s` и нагрузкой памяти RAM / GPU.
-* `POST http://localhost:8666/api/models/stop-all` — остановить всё по нажатию кнопки на тач-экране.
-* `POST http://localhost:8666/api/models/{id}/start` — запуск избранной модели.
+MIT License. See [LICENSE](LICENSE) for details.
+

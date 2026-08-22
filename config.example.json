@@ -4,6 +4,6 @@
   "db_path": "~/.llmcontrol/llmcontrol.db",
   "log_dir": "~/.llmcontrol/logs",
   "exclusive_mode": true,
-  "telegram_token": "YOUR_TELEGRAM_BOT_TOKEN_HERE",
+  "telegram_token": "",
   "telegram_admin_id": 0
 }
