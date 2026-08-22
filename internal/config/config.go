@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 )
 
 type Config struct {
@@ -54,6 +55,15 @@ func LoadConfig(customPath string) (Config, error) {
 
 	if err := json.Unmarshal(data, &cfg); err != nil {
 		return cfg, err
+	}
+
+	// Expand ~ in paths
+	home, _ := os.UserHomeDir()
+	if strings.HasPrefix(cfg.DBPath, "~/") {
+		cfg.DBPath = filepath.Join(home, cfg.DBPath[2:])
+	}
+	if strings.HasPrefix(cfg.LogDir, "~/") {
+		cfg.LogDir = filepath.Join(home, cfg.LogDir[2:])
 	}
 
 	// Environment variable overrides
