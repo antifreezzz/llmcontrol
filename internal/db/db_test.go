@@ -155,9 +155,10 @@ func TestRuntimeStateAndBenchLogs(t *testing.T) {
 	_ = d.SaveEngine(ctx, Engine{ID: "e1", Name: "E1", BinaryPath: "/bin"})
 	_ = d.SaveModel(ctx, Model{ID: "m1", Name: "M1", EngineID: "e1", ModelPath: "/m.gguf"})
 
+	myPID := os.Getpid()
 	state := RuntimeState{
 		ModelID:     "m1",
-		PID:         12345,
+		PID:         myPID,
 		Port:        8088,
 		ProfileName: "fast",
 		Status:      "running",
@@ -171,8 +172,27 @@ func TestRuntimeStateAndBenchLogs(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to get active states: %v", err)
 	}
-	if len(active) != 1 || active[0].PID != 12345 {
+	if len(active) != 1 || active[0].PID != myPID {
 		t.Errorf("unexpected active states: %+v", active)
+	}
+
+	// Test dead PID sanitization
+	deadState := RuntimeState{
+		ModelID:     "m2",
+		PID:         999999999, // guaranteed dead PID
+		Port:        8089,
+		ProfileName: "default",
+		Status:      "running",
+	}
+	_ = d.SaveModel(ctx, Model{ID: "m2", Name: "M2", EngineID: "e1", ModelPath: "/m2.gguf"})
+	_ = d.SetRuntimeState(ctx, deadState)
+
+	m2, err := d.GetModel(ctx, "m2")
+	if err != nil || m2 == nil {
+		t.Fatalf("failed to get m2: %v", err)
+	}
+	if m2.Runtime.Status != "stopped" {
+		t.Errorf("expected dead PID state to be sanitized to 'stopped', got: %s", m2.Runtime.Status)
 	}
 
 	// Bench log

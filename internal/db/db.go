@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"syscall"
 	"time"
 
 	_ "modernc.org/sqlite"
@@ -33,6 +34,8 @@ func NewDB(dbPath string) (*DB, error) {
 		sqliteDB.Close()
 		return nil, fmt.Errorf("failed to initialize schema: %w", err)
 	}
+
+	_ = d.ReconcileRuntimeStates(context.Background())
 
 	return d, nil
 }
@@ -221,6 +224,7 @@ func (d *DB) GetModel(ctx context.Context, id string) (*Model, error) {
 	rtRow := d.db.QueryRowContext(ctx, `SELECT model_id, pid, port, profile_name, status, started_at, last_error FROM runtime_state WHERE model_id = ?`, id)
 	var rt RuntimeState
 	if err := rtRow.Scan(&rt.ModelID, &rt.PID, &rt.Port, &rt.ProfileName, &rt.Status, &rt.StartedAt, &rt.LastError); err == nil {
+		d.sanitizeRuntimeState(ctx, &rt)
 		m.Runtime = &rt
 	}
 
@@ -268,6 +272,7 @@ func (d *DB) ListModels(ctx context.Context) ([]Model, error) {
 		rtRow := d.db.QueryRowContext(ctx, `SELECT model_id, pid, port, profile_name, status, started_at, last_error FROM runtime_state WHERE model_id = ?`, id)
 		var rt RuntimeState
 		if err := rtRow.Scan(&rt.ModelID, &rt.PID, &rt.Port, &rt.ProfileName, &rt.Status, &rt.StartedAt, &rt.LastError); err == nil {
+			d.sanitizeRuntimeState(ctx, &rt)
 			list[i].Runtime = &rt
 		}
 	}
@@ -402,14 +407,97 @@ func (d *DB) GetActiveRuntimeStates(ctx context.Context) ([]RuntimeState, error)
 	defer rows.Close()
 
 	var list []RuntimeState
+	var deadIDs []string
 	for rows.Next() {
 		var r RuntimeState
 		if err := rows.Scan(&r.ModelID, &r.PID, &r.Port, &r.ProfileName, &r.Status, &r.StartedAt, &r.LastError); err != nil {
 			return nil, err
 		}
-		list = append(list, r)
+		if IsPIDAlive(r.PID) {
+			list = append(list, r)
+		} else {
+			deadIDs = append(deadIDs, r.ModelID)
+		}
 	}
+
+	if len(deadIDs) > 0 {
+		go func(ids []string) {
+			d.mu.Lock()
+			defer d.mu.Unlock()
+			for _, id := range ids {
+				_, _ = d.db.Exec(`UPDATE runtime_state SET status = 'stopped', pid = 0 WHERE model_id = ?`, id)
+			}
+		}(deadIDs)
+	}
+
 	return list, nil
+}
+
+func (d *DB) sanitizeRuntimeState(ctx context.Context, rt *RuntimeState) {
+	if rt == nil {
+		return
+	}
+	if (rt.Status == "running" || rt.Status == "starting") && !IsPIDAlive(rt.PID) {
+		rt.Status = "stopped"
+		rt.PID = 0
+		modelID := rt.ModelID
+		go func(id string) {
+			d.mu.Lock()
+			defer d.mu.Unlock()
+			_, _ = d.db.Exec(`UPDATE runtime_state SET status = 'stopped', pid = 0 WHERE model_id = ?`, id)
+		}(modelID)
+	}
+}
+
+// ReconcileRuntimeStates cleans up any lingering 'running'/'starting' models whose processes are dead.
+func (d *DB) ReconcileRuntimeStates(ctx context.Context) error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	rows, err := d.db.QueryContext(ctx, `SELECT model_id, pid FROM runtime_state WHERE status IN ('starting', 'running')`)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+
+	var deadIDs []string
+	for rows.Next() {
+		var modelID string
+		var pid int
+		if err := rows.Scan(&modelID, &pid); err == nil {
+			if !IsPIDAlive(pid) {
+				deadIDs = append(deadIDs, modelID)
+			}
+		}
+	}
+
+	for _, id := range deadIDs {
+		_, _ = d.db.ExecContext(ctx, `UPDATE runtime_state SET status = 'stopped', pid = 0 WHERE model_id = ?`, id)
+	}
+	return nil
+}
+
+// IsPIDAlive checks whether a process with the given PID is currently active.
+func IsPIDAlive(pid int) bool {
+	if pid <= 0 {
+		return false
+	}
+	// Check /proc/<pid> on Linux
+	if _, err := os.Stat(fmt.Sprintf("/proc/%d", pid)); err == nil {
+		return true
+	}
+	// Fallback using syscall signal 0
+	proc, err := os.FindProcess(pid)
+	if err != nil {
+		return false
+	}
+	err = proc.Signal(syscall.Signal(0))
+	if err == nil {
+		return true
+	}
+	if errno, ok := err.(syscall.Errno); ok && errno == syscall.EPERM {
+		return true
+	}
+	return false
 }
 
 // Benchmark Logs

@@ -462,7 +462,10 @@
         <div class="profiles-manager">
           <div class="profiles-list">
             <div id="prof-buttons-list" style="display:flex; flex-direction:column; gap:4px;"></div>
-            <button style="margin-top:auto; font-size:11px;" onclick="addNewProfile()">➕ Новый профиль</button>
+            <div style="margin-top:auto; display:flex; flex-direction:column; gap:6px;">
+              <button style="font-size:11px;" onclick="duplicateCurrentProfile()">📋 Копировать текущий</button>
+              <button style="font-size:11px;" onclick="addNewProfile()">➕ Новый профиль</button>
+            </div>
           </div>
           <div class="profile-editor-fields" id="prof-fields">
             <div class="form-row">
@@ -544,7 +547,8 @@
               <input type="text" id="p-extra" onchange="syncCurrentProfile()" placeholder="--ubatch 2048 --temp 0.6" />
             </div>
 
-            <div style="display: flex; justify-content: flex-end; margin-top: 6px;">
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-top: 8px;">
+              <button type="button" class="btn-primary" style="font-size: 11px; padding: 4px 10px;" onclick="duplicateCurrentProfile()">📋 Клонировать этот профиль</button>
               <button type="button" class="btn-danger" style="font-size: 11px; padding: 4px 8px;" onclick="deleteCurrentProfile()">🗑 Удалить этот профиль</button>
             </div>
           </div>
@@ -845,6 +849,32 @@
         enable_ui: true,
         tools: 'safe'
       });
+      currentProfileIdx = editingProfiles.length - 1;
+      renderProfilesManager();
+    }
+
+    function duplicateCurrentProfile() {
+      syncCurrentProfile();
+      const cur = editingProfiles[currentProfileIdx];
+      if (!cur) return;
+
+      let baseName = cur.name || 'profile';
+      let newName = baseName + '_copy';
+      let counter = 2;
+      while (editingProfiles.some(p => p.name === newName)) {
+        newName = `${baseName}_copy_${counter}`;
+        counter++;
+      }
+
+      const cloned = JSON.parse(JSON.stringify(cur));
+      cloned.name = newName;
+      if (cloned.description) {
+        cloned.description = cloned.description + ' (копия)';
+      } else {
+        cloned.description = 'Копия ' + baseName;
+      }
+
+      editingProfiles.push(cloned);
       currentProfileIdx = editingProfiles.length - 1;
       renderProfilesManager();
     }
