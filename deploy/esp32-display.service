@@ -1,5 +1,5 @@
 [Unit]
-Description=ESP32 Display Host Telemetry and LLM Bridge
+Description=ESP32 Desk Display Telemetry and LLM Bridge
 After=network.target llmcontrol.service
 
 [Service]
