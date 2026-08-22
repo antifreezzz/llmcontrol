@@ -1,5 +1,7 @@
 # LLM Control Center (`llmcontrol`)
 
+[English](README.md) | [Русский](README.ru.md)
+
 [![Go Version](https://img.shields.io/badge/Go-1.22+-00ADD8?style=flat&logo=go)](https://go.dev/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Architecture: Pure Go + SQLite](https://img.shields.io/badge/Database-SQLite_(Pure_Go)-003B57?style=flat&logo=sqlite)](https://modernc.org/sqlite)
