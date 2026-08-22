@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "llmcontrol": {
+      "command": "/path/to/llmctl",
+      "args": ["mcp"]
+    }
+  }
+}

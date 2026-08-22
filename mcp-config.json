@@ -1,8 +1,0 @@
-{
-  "mcpServers": {
-    "llmcontrol": {
-      "command": "/home/antifreezzz/Documents/projects/llmcontrol/llmctl",
-      "args": ["mcp"]
-    }
-  }
-}

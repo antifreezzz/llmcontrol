@@ -21,6 +21,7 @@ logs/
 
 # Sensitive / local configuration
 config.json
+mcp-config.json
 .env
 
 # IDEs

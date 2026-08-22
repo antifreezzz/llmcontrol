@@ -4,8 +4,8 @@ After=network.target llmcontrol.service
 
 [Service]
 Type=simple
-WorkingDirectory=/home/antifreezzz/orca/projects/minimaxdumbtest
-ExecStart=/usr/bin/python3 /home/antifreezzz/orca/projects/minimaxdumbtest/host/host.py
+WorkingDirectory=%h/pc-telemetry-dashboard
+ExecStart=/usr/bin/python3 %h/pc-telemetry-dashboard/host/host.py
 Restart=always
 RestartSec=5s
 Environment=PYTHONUNBUFFERED=1
