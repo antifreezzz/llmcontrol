@@ -199,6 +199,16 @@ func (s *Server) handleUpdateModel(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if len(m.Profiles) > 0 {
+		for _, p := range m.Profiles {
+			p.ModelID = id
+			if p.CtxSize <= 0 {
+				p.CtxSize = 4096
+			}
+			_ = s.db.SaveProfile(ctx, p)
+		}
+	}
+
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]string{"status": "updated", "model_id": id})
 }

@@ -33,7 +33,7 @@
     .badge { background: var(--card-bg); border: 1px solid var(--card-border); padding: 6px 12px; border-radius: 8px; font-size: 13px; display: flex; align-items: center; gap: 6px; }
     .badge-val { font-weight: 600; color: var(--primary); }
     
-    .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(350px, 1fr)); gap: 20px; }
+    .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(360px, 1fr)); gap: 20px; }
     
     .card {
       background: var(--card-bg);
@@ -221,7 +221,7 @@
       border: 1px solid #1e293b;
     }
 
-    /* Modal */
+    /* Modal Tabs */
     .modal-backdrop {
       display: none;
       position: fixed;
@@ -239,8 +239,8 @@
       border: 1px solid var(--card-border);
       border-radius: 14px;
       width: 100%;
-      max-width: 600px;
-      max-height: 90vh;
+      max-width: 760px;
+      max-height: 92vh;
       display: flex;
       flex-direction: column;
       box-shadow: 0 20px 40px rgba(0,0,0,0.5);
@@ -249,11 +249,32 @@
       display: flex;
       justify-content: space-between;
       align-items: center;
-      padding: 18px 22px;
+      padding: 16px 22px;
       border-bottom: 1px solid var(--card-border);
     }
+    .modal-tabs {
+      display: flex;
+      background: #0d1322;
+      border-bottom: 1px solid var(--card-border);
+      padding: 0 16px;
+    }
+    .tab-btn {
+      background: none;
+      border: none;
+      border-bottom: 2px solid transparent;
+      border-radius: 0;
+      padding: 12px 18px;
+      font-size: 13px;
+      font-weight: 600;
+      color: var(--text-muted);
+    }
+    .tab-btn.active {
+      color: var(--primary);
+      border-bottom-color: var(--primary);
+      background: none;
+    }
     .modal-body {
-      padding: 22px;
+      padding: 20px 24px;
       overflow-y: auto;
       display: flex;
       flex-direction: column;
@@ -261,9 +282,9 @@
     }
     .modal-footer {
       display: flex;
-      justify-content: flex-end;
-      gap: 10px;
-      padding: 16px 22px;
+      justify-content: space-between;
+      align-items: center;
+      padding: 14px 22px;
       border-top: 1px solid var(--card-border);
     }
     .form-group {
@@ -281,6 +302,70 @@
     .form-row {
       display: grid;
       grid-template-columns: 1fr 1fr;
+      gap: 12px;
+    }
+    .form-row-3 {
+      display: grid;
+      grid-template-columns: 1fr 1fr 1fr;
+      gap: 10px;
+    }
+    .checkbox-group {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 13px;
+      cursor: pointer;
+    }
+    .checkbox-group input { width: auto; }
+    .quick-badges {
+      display: flex;
+      gap: 6px;
+      flex-wrap: wrap;
+      margin-top: 4px;
+    }
+    .quick-badge-btn {
+      padding: 2px 8px;
+      font-size: 11px;
+      background: #0d1322;
+      border: 1px solid var(--card-border);
+      border-radius: 4px;
+    }
+    .quick-badge-btn:hover {
+      border-color: var(--primary);
+      color: var(--primary);
+    }
+    .profiles-manager {
+      display: flex;
+      gap: 16px;
+      min-height: 280px;
+    }
+    .profiles-list {
+      width: 180px;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      border-right: 1px solid var(--card-border);
+      padding-right: 12px;
+      flex-shrink: 0;
+    }
+    .prof-item-btn {
+      text-align: left;
+      justify-content: flex-start;
+      padding: 8px 12px;
+      background: #0d1322;
+      border: 1px solid var(--card-border);
+      font-size: 12px;
+    }
+    .prof-item-btn.active {
+      border-color: var(--primary);
+      background: rgba(59, 130, 246, 0.15);
+      color: var(--primary);
+      font-weight: 600;
+    }
+    .profile-editor-fields {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
       gap: 12px;
     }
   </style>
@@ -312,62 +397,166 @@
     <pre id="logs">Выберите модель для просмотра логов...</pre>
   </div>
 
-  <!-- Modal for Add/Edit Model -->
+  <!-- Modal for Comprehensive Model & Profiles Configurator -->
   <div class="modal-backdrop" id="model-modal">
     <div class="modal">
       <div class="modal-header">
-        <h2 id="modal-title" style="font-size: 18px;">Добавить модель</h2>
+        <h2 id="modal-title" style="font-size: 17px; font-weight: 700;">Конфигурация модели</h2>
         <button class="card-action-icon" onclick="closeModal()">✕</button>
       </div>
-      <div class="modal-body">
+      <div class="modal-tabs">
+        <button class="tab-btn active" id="tab-btn-general" onclick="switchTab('general')">📁 Основные параметры</button>
+        <button class="tab-btn" id="tab-btn-profiles" onclick="switchTab('profiles')">⚡ Профили инференса (<span id="prof-count">0</span>)</button>
+      </div>
+      
+      <!-- Tab 1: General Settings -->
+      <div class="modal-body" id="tab-general">
         <div class="form-row">
           <div class="form-group">
             <label>ID Модели (slug)</label>
-            <input type="text" id="m-id" placeholder="например: qwen14b" />
+            <input type="text" id="m-id" placeholder="например: gemma4" />
           </div>
           <div class="form-group">
-            <label>Название</label>
-            <input type="text" id="m-name" placeholder="например: Qwen 3.5 14B" />
+            <label>Отображаемое имя</label>
+            <input type="text" id="m-name" placeholder="например: Gemma 4 26B A4B" />
           </div>
         </div>
 
         <div class="form-row">
           <div class="form-group">
-            <label>Движок</label>
+            <label>Движок (Backend)</label>
             <select id="m-engine">
-              <option value="llama-vk">Llama.cpp Vulkan (llama-vk)</option>
-              <option value="llama-sycl">Llama.cpp Intel SYCL (llama-sycl)</option>
+              <option value="llama-vk">Llama.cpp Vulkan (Intel Arc / Vulkan)</option>
+              <option value="llama-sycl">Llama.cpp Intel SYCL (Level Zero / XMX)</option>
             </select>
           </div>
           <div class="form-group">
-            <label>Порт по умолчанию</label>
+            <label>Порт сервера</label>
             <input type="number" id="m-port" value="8080" />
           </div>
         </div>
 
         <div class="form-group">
-          <label>Путь к модели (.gguf)</label>
-          <input type="text" id="m-path" placeholder="/home/.../model.gguf" />
+          <label>Путь к основному файлу модели (.gguf)</label>
+          <input type="text" id="m-path" placeholder="/home/.../model-Q4_0.gguf" />
         </div>
 
         <div class="form-group">
-          <label>Путь к mmproj (Vision, опц.)</label>
-          <input type="text" id="m-mmproj" placeholder="/home/.../mmproj.gguf" />
+          <label>Путь к Vision адаптеру (mmproj .gguf, опционально)</label>
+          <input type="text" id="m-mmproj" placeholder="/home/.../mmproj-BF16.gguf" />
         </div>
 
         <div class="form-group">
-          <label>Путь к MTP спекулятору (опц.)</label>
-          <input type="text" id="m-mtp" placeholder="/home/.../assistant-mtp.gguf" />
+          <label>Путь к MTP/Спекулятивному драфту (.gguf, опционально)</label>
+          <input type="text" id="m-mtp" placeholder="/home/.../assistant-MTP-Q8_0.gguf" />
         </div>
 
         <div class="form-group">
-          <label>Профиль по умолчанию</label>
+          <label>Профиль по умолчанию при старте</label>
           <input type="text" id="m-def-profile" value="default" />
         </div>
       </div>
+
+      <!-- Tab 2: Full Profiles Manager -->
+      <div class="modal-body" id="tab-profiles" style="display: none;">
+        <div class="profiles-manager">
+          <div class="profiles-list">
+            <div id="prof-buttons-list" style="display:flex; flex-direction:column; gap:4px;"></div>
+            <button style="margin-top:auto; font-size:11px;" onclick="addNewProfile()">➕ Новый профиль</button>
+          </div>
+          <div class="profile-editor-fields" id="prof-fields">
+            <div class="form-row">
+              <div class="form-group">
+                <label>Имя профиля</label>
+                <input type="text" id="p-name" onchange="syncCurrentProfile()" placeholder="fast, default, long, xlong..." />
+              </div>
+              <div class="form-group">
+                <label>Описание</label>
+                <input type="text" id="p-desc" onchange="syncCurrentProfile()" placeholder="для коротких запросов / для кода" />
+              </div>
+            </div>
+
+            <div class="form-group">
+              <label>Размер контекста (Context Size: -c)</label>
+              <input type="number" id="p-ctx" onchange="syncCurrentProfile()" value="4096" />
+              <div class="quick-badges">
+                <button type="button" class="quick-badge-btn" onclick="setCtx(2048)">2K</button>
+                <button type="button" class="quick-badge-btn" onclick="setCtx(4096)">4K</button>
+                <button type="button" class="quick-badge-btn" onclick="setCtx(8192)">8K</button>
+                <button type="button" class="quick-badge-btn" onclick="setCtx(16384)">16K</button>
+                <button type="button" class="quick-badge-btn" onclick="setCtx(32768)">32K</button>
+                <button type="button" class="quick-badge-btn" onclick="setCtx(65536)">64K</button>
+                <button type="button" class="quick-badge-btn" onclick="setCtx(131072)">128K</button>
+                <button type="button" class="quick-badge-btn" onclick="setCtx(262144)">256K</button>
+              </div>
+            </div>
+
+            <div class="form-row-3">
+              <div class="form-group">
+                <label>Тип KV Cache (--cache-type-k/v)</label>
+                <select id="p-kv" onchange="syncCurrentProfile()">
+                  <option value="q8_0">q8_0 (Стандартное качество)</option>
+                  <option value="q4_0">q4_0 (Экономия 50% VRAM)</option>
+                  <option value="f16">f16 (Максимальная точность)</option>
+                </select>
+              </div>
+              <div class="form-group">
+                <label>Flash Attention (--flash-attn)</label>
+                <select id="p-fa" onchange="syncCurrentProfile()">
+                  <option value="auto">auto (Авто)</option>
+                  <option value="on">on (Включить)</option>
+                  <option value="off">off (Выключить)</option>
+                </select>
+              </div>
+              <div class="form-group">
+                <label>Параллельные слоты (-np)</label>
+                <input type="number" id="p-np" onchange="syncCurrentProfile()" value="1" min="1" max="16" />
+              </div>
+            </div>
+
+            <div class="form-row" style="margin-top: 4px;">
+              <label class="checkbox-group">
+                <input type="checkbox" id="p-mtp" onchange="syncCurrentProfile()" />
+                <span>Использовать MTP спекулятор (-md)</span>
+              </label>
+              <label class="checkbox-group">
+                <input type="checkbox" id="p-vision" onchange="syncCurrentProfile()" />
+                <span>Включить Vision (--mmproj)</span>
+              </label>
+            </div>
+            <div class="form-row">
+              <label class="checkbox-group">
+                <input type="checkbox" id="p-ui" onchange="syncCurrentProfile()" checked />
+                <span>Включить WebUI встроенный в llama-server</span>
+              </label>
+              <div class="form-group">
+                <label>Tools mode</label>
+                <select id="p-tools" onchange="syncCurrentProfile()">
+                  <option value="safe">safe (Безопасный режим)</option>
+                  <option value="all">all (Все инструменты)</option>
+                  <option value="">none (Чистый API)</option>
+                </select>
+              </div>
+            </div>
+
+            <div class="form-group">
+              <label>Дополнительные CLI флаги (Extra Flags)</label>
+              <input type="text" id="p-extra" onchange="syncCurrentProfile()" placeholder="--ubatch 2048 --temp 0.6" />
+            </div>
+
+            <div style="display: flex; justify-content: flex-end; margin-top: 6px;">
+              <button type="button" class="btn-danger" style="font-size: 11px; padding: 4px 8px;" onclick="deleteCurrentProfile()">🗑 Удалить этот профиль</button>
+            </div>
+          </div>
+        </div>
+      </div>
+
       <div class="modal-footer">
-        <button onclick="closeModal()">Отмена</button>
-        <button class="btn-primary" onclick="saveModelForm()">Сохранить</button>
+        <div style="font-size: 12px; color: var(--text-muted);" id="modal-status-hint">Нажмите Сохранить для записи в SQLite</div>
+        <div style="display: flex; gap: 8px;">
+          <button onclick="closeModal()">Отмена</button>
+          <button class="btn-primary" onclick="saveModelForm()">💾 Сохранить всё</button>
+        </div>
       </div>
     </div>
   </div>
@@ -376,6 +565,8 @@
     let activeLogModel = "";
     let isEditMode = false;
     let allModels = [];
+    let editingProfiles = [];
+    let currentProfileIdx = 0;
 
     async function loadAll() {
       try {
@@ -438,7 +629,7 @@
             </div>
             <div class="card-top-right">
               <span class="status-pill ${statusClass}">${statusText}</span>
-              <button class="card-action-icon" onclick="openEditModal('${m.id}')" title="Редактировать">✏️</button>
+              <button class="card-action-icon" onclick="openEditModal('${m.id}')" title="Редактировать модель и профили">⚙️ Настройки</button>
               <button class="card-action-icon" onclick="deleteModel('${m.id}')" title="Удалить">🗑</button>
             </div>
           </div>
@@ -455,7 +646,7 @@
           <div class="controls">
             <div class="profile-select-wrapper">
               <select id="prof-${m.id}" ${isRunning ? 'disabled' : ''}>
-                ${(m.profiles || []).map(p => `<option value="${p.name}" ${p.name === (m.runtime?.profile_name || m.default_profile) ? 'selected' : ''}>Profile: ${p.name} (ctx ${p.ctx_size})</option>`).join('')}
+                ${(m.profiles || []).map(p => `<option value="${p.name}" ${p.name === (m.runtime?.profile_name || m.default_profile) ? 'selected' : ''}>Profile: ${p.name} (ctx ${p.ctx_size}, ${p.kv_type || 'q8_0'})</option>`).join('')}
               </select>
             </div>
             ${buttonGroupHTML}
@@ -515,10 +706,25 @@
       document.getElementById('logs').innerText = logs || "(нет записей)";
     }
 
-    // Modal Add / Edit
+    // Modal Tabs & Configuration
+    function switchTab(tab) {
+      if (tab === 'general') {
+        document.getElementById('tab-general').style.display = 'flex';
+        document.getElementById('tab-profiles').style.display = 'none';
+        document.getElementById('tab-btn-general').classList.add('active');
+        document.getElementById('tab-btn-profiles').classList.remove('active');
+      } else {
+        document.getElementById('tab-general').style.display = 'none';
+        document.getElementById('tab-profiles').style.display = 'flex';
+        document.getElementById('tab-btn-general').classList.remove('active');
+        document.getElementById('tab-btn-profiles').classList.add('active');
+        renderProfilesManager();
+      }
+    }
+
     function openAddModal() {
       isEditMode = false;
-      document.getElementById('modal-title').innerText = 'Добавить модель';
+      document.getElementById('modal-title').innerText = 'Добавить новую модель';
       document.getElementById('m-id').value = '';
       document.getElementById('m-id').disabled = false;
       document.getElementById('m-name').value = '';
@@ -528,6 +734,14 @@
       document.getElementById('m-mmproj').value = '';
       document.getElementById('m-mtp').value = '';
       document.getElementById('m-def-profile').value = 'default';
+
+      editingProfiles = [
+        { name: 'default', description: 'Сбалансированный', ctx_size: 4096, kv_type: 'q8_0', flash_attn: 'auto', use_mtp: true, use_vision: false, enable_ui: true, tools: 'safe', parallel: 1 },
+        { name: 'fast', description: 'Макс скорость', ctx_size: 2048, kv_type: 'q4_0', flash_attn: 'on', use_mtp: true, use_vision: false, enable_ui: true, tools: 'safe', parallel: 1 }
+      ];
+      currentProfileIdx = 0;
+      document.getElementById('prof-count').innerText = editingProfiles.length;
+      switchTab('general');
       document.getElementById('model-modal').classList.add('open');
     }
 
@@ -536,7 +750,7 @@
       if (!m) return;
 
       isEditMode = true;
-      document.getElementById('modal-title').innerText = 'Редактировать модель';
+      document.getElementById('modal-title').innerText = `Настройки модели: ${m.name}`;
       document.getElementById('m-id').value = m.id;
       document.getElementById('m-id').disabled = true;
       document.getElementById('m-name').value = m.name;
@@ -546,6 +760,14 @@
       document.getElementById('m-mmproj').value = m.mmproj_path || '';
       document.getElementById('m-mtp').value = m.mtp_path || '';
       document.getElementById('m-def-profile').value = m.default_profile || 'default';
+
+      editingProfiles = JSON.parse(JSON.stringify(m.profiles || []));
+      if (editingProfiles.length === 0) {
+        editingProfiles.push({ name: 'default', ctx_size: 4096, kv_type: 'q8_0', flash_attn: 'auto', enable_ui: true, parallel: 1 });
+      }
+      currentProfileIdx = 0;
+      document.getElementById('prof-count').innerText = editingProfiles.length;
+      switchTab('general');
       document.getElementById('model-modal').classList.add('open');
     }
 
@@ -553,7 +775,93 @@
       document.getElementById('model-modal').classList.remove('open');
     }
 
+    function renderProfilesManager() {
+      document.getElementById('prof-count').innerText = editingProfiles.length;
+      const listDiv = document.getElementById('prof-buttons-list');
+      listDiv.innerHTML = '';
+
+      editingProfiles.forEach((p, idx) => {
+        const btn = document.createElement('button');
+        btn.className = `prof-item-btn ${idx === currentProfileIdx ? 'active' : ''}`;
+        btn.innerText = `⚡ ${p.name || 'без имени'}`;
+        btn.onclick = () => {
+          syncCurrentProfile();
+          currentProfileIdx = idx;
+          renderProfilesManager();
+        };
+        listDiv.appendChild(btn);
+      });
+
+      // Load active profile into form
+      const cur = editingProfiles[currentProfileIdx];
+      if (cur) {
+        document.getElementById('p-name').value = cur.name || '';
+        document.getElementById('p-desc').value = cur.description || '';
+        document.getElementById('p-ctx').value = cur.ctx_size || 4096;
+        document.getElementById('p-kv').value = cur.kv_type || 'q8_0';
+        document.getElementById('p-fa').value = cur.flash_attn || 'auto';
+        document.getElementById('p-np').value = cur.parallel || 1;
+        document.getElementById('p-mtp').checked = cur.use_mtp !== false;
+        document.getElementById('p-vision').checked = !!cur.use_vision;
+        document.getElementById('p-ui').checked = cur.enable_ui !== false;
+        document.getElementById('p-tools').value = cur.tools || 'safe';
+        document.getElementById('p-extra').value = cur.extra_args || '';
+      }
+    }
+
+    function syncCurrentProfile() {
+      const cur = editingProfiles[currentProfileIdx];
+      if (!cur) return;
+
+      cur.name = document.getElementById('p-name').value.trim();
+      cur.description = document.getElementById('p-desc').value.trim();
+      cur.ctx_size = parseInt(document.getElementById('p-ctx').value) || 4096;
+      cur.kv_type = document.getElementById('p-kv').value;
+      cur.flash_attn = document.getElementById('p-fa').value;
+      cur.parallel = parseInt(document.getElementById('p-np').value) || 1;
+      cur.use_mtp = document.getElementById('p-mtp').checked;
+      cur.use_vision = document.getElementById('p-vision').checked;
+      cur.enable_ui = document.getElementById('p-ui').checked;
+      cur.tools = document.getElementById('p-tools').value;
+      cur.extra_args = document.getElementById('p-extra').value.trim();
+    }
+
+    function setCtx(val) {
+      document.getElementById('p-ctx').value = val;
+      syncCurrentProfile();
+    }
+
+    function addNewProfile() {
+      syncCurrentProfile();
+      editingProfiles.push({
+        name: `profile_${editingProfiles.length + 1}`,
+        description: 'Новый профиль',
+        ctx_size: 4096,
+        kv_type: 'q8_0',
+        flash_attn: 'auto',
+        parallel: 1,
+        use_mtp: true,
+        use_vision: false,
+        enable_ui: true,
+        tools: 'safe'
+      });
+      currentProfileIdx = editingProfiles.length - 1;
+      renderProfilesManager();
+    }
+
+    function deleteCurrentProfile() {
+      if (editingProfiles.length <= 1) {
+        alert('У модели должен оставаться хотя бы 1 профиль!');
+        return;
+      }
+      editingProfiles.splice(currentProfileIdx, 1);
+      currentProfileIdx = Math.max(0, currentProfileIdx - 1);
+      renderProfilesManager();
+    }
+
     async function saveModelForm() {
+      syncCurrentProfile();
+
       const id = document.getElementById('m-id').value.trim();
       const name = document.getElementById('m-name').value.trim();
       const engine_id = document.getElementById('m-engine').value;
@@ -576,13 +884,11 @@
         model_path,
         mmproj_path,
         mtp_path,
-        default_profile
+        default_profile,
+        profiles: editingProfiles
       };
 
       if (!isEditMode) {
-        payload.profiles = [
-          { name: 'default', ctx_size: 4096, kv_type: 'q8_0', flash_attn: 'auto', enable_ui: true }
-        ];
         await fetch('/api/models', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
