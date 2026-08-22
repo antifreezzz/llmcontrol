@@ -62,13 +62,54 @@ func cleanQuotes(val string) string {
 	return strings.TrimSpace(val)
 }
 
+var reVarRef = regexp.MustCompile(`\$\{([A-Za-z0-9_]+)\}|\$([A-Za-z0-9_]+)`)
+
 func expandVars(val string, vars map[string]string) string {
 	val = cleanQuotes(val)
-	for k, v := range vars {
-		val = strings.ReplaceAll(val, "${"+k+"}", v)
-		val = strings.ReplaceAll(val, "$"+k, v)
+	return reVarRef.ReplaceAllStringFunc(val, func(match string) string {
+		varName := strings.TrimPrefix(match, "$")
+		varName = strings.TrimPrefix(varName, "{")
+		varName = strings.TrimSuffix(varName, "}")
+		if replacement, ok := vars[varName]; ok {
+			return replacement
+		}
+		return match
+	})
+}
+
+func parseVarAssignments(line string, vars map[string]string) {
+	var tokens []string
+	var current strings.Builder
+	inSingle := false
+	inDouble := false
+
+	for i := 0; i < len(line); i++ {
+		ch := line[i]
+		if ch == '\'' && !inDouble {
+			inSingle = !inSingle
+			current.WriteByte(ch)
+		} else if ch == '"' && !inSingle {
+			inDouble = !inDouble
+			current.WriteByte(ch)
+		} else if (ch == ';' || ch == '\n') && !inSingle && !inDouble {
+			tokens = append(tokens, current.String())
+			current.Reset()
+		} else {
+			current.WriteByte(ch)
+		}
 	}
-	return val
+	if current.Len() > 0 {
+		tokens = append(tokens, current.String())
+	}
+
+	for _, token := range tokens {
+		token = strings.TrimSpace(token)
+		if match := reVarAssign.FindStringSubmatch(token); len(match) == 3 {
+			k := match[1]
+			v := expandVars(match[2], vars)
+			vars[k] = v
+		}
+	}
 }
 
 func ParseScriptContent(filename, content string) (*ParsedModel, error) {
@@ -116,18 +157,30 @@ func ParseScriptContent(filename, content string) (*ParsedModel, error) {
 			continue
 		}
 
-		// Variable assignments: VAR=VAL
-		if match := reVarAssign.FindStringSubmatch(line); len(match) == 3 {
-			k := match[1]
-			v := expandVars(match[2], vars)
-			vars[k] = v
-		}
+		// Parse variable assignments (including multiple per line separated by ;)
+		parseVarAssignments(line, vars)
 	}
 
 	modelPath := expandVars(vars["MODEL"], vars)
+	if modelPath == "" && vars["MODEL_Q2"] != "" {
+		modelPath = expandVars(vars["MODEL_Q2"], vars)
+	}
+	if modelPath == "" && vars["MODEL_9B_Q4"] != "" {
+		modelPath = expandVars(vars["MODEL_9B_Q4"], vars)
+	}
 	if modelPath == "" {
 		return nil, fmt.Errorf("no MODEL variable found in script")
 	}
+
+	mmprojPath := expandVars(vars["MMPROJ"], vars)
+	if mmprojPath == "" && vars["MMPROJ_Q2"] != "" {
+		mmprojPath = expandVars(vars["MMPROJ_Q2"], vars)
+	}
+	if mmprojPath == "" && vars["MMPROJ_9B"] != "" {
+		mmprojPath = expandVars(vars["MMPROJ_9B"], vars)
+	}
+
+	mtpPath := expandVars(vars["MTP"], vars)
 
 	llamaBin := expandVars(vars["LLAMA_BIN"], vars)
 	if llamaBin == "" {
@@ -145,8 +198,8 @@ func ParseScriptContent(filename, content string) (*ParsedModel, error) {
 
 	port := 8080
 	if pStr, ok := vars["PORT"]; ok {
-		if pNum, err := strconv.Atoi(strings.TrimSpace(pStr)); err == nil && pNum > 0 {
-			port = pNum
+		if pVal, err := strconv.Atoi(pStr); err == nil && pVal > 0 {
+			port = pVal
 		}
 	}
 
@@ -170,8 +223,8 @@ func ParseScriptContent(filename, content string) (*ParsedModel, error) {
 		EngineBinary:   llamaBin,
 		EngineID:       engineID,
 		ModelPath:      modelPath,
-		MMProjPath:     expandVars(vars["MMPROJ"], vars),
-		MTPPath:        expandVars(vars["MTP"], vars),
+		MMProjPath:     mmprojPath,
+		MTPPath:        mtpPath,
 		DefaultPort:    port,
 		DefaultProfile: "default",
 		Profiles:       make(map[string]ParsedProfile),
@@ -179,6 +232,12 @@ func ParseScriptContent(filename, content string) (*ParsedModel, error) {
 
 	// Parse profiles
 	for pName, raw := range profileRaw {
+		useVision := false
+		if strings.Contains(strings.ToLower(pName), "vision") ||
+			strings.Contains(strings.ToLower(profileDescr[pName]), "vision") {
+			useVision = true
+		}
+
 		prof := ParsedProfile{
 			Name:        pName,
 			Description: profileDescr[pName],
@@ -187,14 +246,11 @@ func ParseScriptContent(filename, content string) (*ParsedModel, error) {
 			KVType:      "q8_0",
 			FlashAttn:   "auto",
 			UseMTP:      true,
-			UseVision:   false,
+			UseVision:   useVision,
 			EnableUI:    true,
 			Tools:       "safe",
 		}
 
-		// Example: _apply 2048 1 1 0 1 safe q4_0 on
-		// Or: _apply 8192 1 1 '' f16 on 2048 99
-		// Or: _apply 4096 1 36 f16
 		parts := strings.Fields(raw)
 		if len(parts) > 1 && parts[0] == "_apply" {
 			args := parts[1:]
@@ -209,6 +265,8 @@ func ParseScriptContent(filename, content string) (*ParsedModel, error) {
 					prof.KVType = arg
 				case "on", "off", "auto":
 					prof.FlashAttn = arg
+				case "safe", "all":
+					prof.Tools = arg
 				}
 			}
 		}
@@ -218,11 +276,16 @@ func ParseScriptContent(filename, content string) (*ParsedModel, error) {
 
 	if len(res.Profiles) == 0 {
 		res.Profiles["default"] = ParsedProfile{
-			Name:      "default",
-			CtxSize:   4096,
-			KVType:    "q8_0",
-			FlashAttn: "auto",
-			EnableUI:  true,
+			Name:        "default",
+			Description: "Стандартный профиль",
+			CtxSize:     4096,
+			Parallel:    1,
+			KVType:      "q8_0",
+			FlashAttn:   "auto",
+			UseMTP:      true,
+			UseVision:   false,
+			EnableUI:    true,
+			Tools:       "safe",
 		}
 	}
 
