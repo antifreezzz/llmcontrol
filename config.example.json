@@ -1,0 +1,9 @@
+{
+  "http_host": "0.0.0.0",
+  "http_port": 8666,
+  "db_path": "~/.llmcontrol/llmcontrol.db",
+  "log_dir": "~/.llmcontrol/logs",
+  "exclusive_mode": true,
+  "telegram_token": "YOUR_TELEGRAM_BOT_TOKEN_HERE",
+  "telegram_admin_id": 0
+}

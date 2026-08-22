@@ -1,0 +1,460 @@
+package db
+
+import (
+	"context"
+	"database/sql"
+	"fmt"
+	"os"
+	"path/filepath"
+	"sync"
+	"time"
+
+	_ "modernc.org/sqlite"
+)
+
+type DB struct {
+	db *sql.DB
+	mu sync.RWMutex
+}
+
+func NewDB(dbPath string) (*DB, error) {
+	if err := os.MkdirAll(filepath.Dir(dbPath), 0755); err != nil {
+		return nil, fmt.Errorf("failed to create db directory: %w", err)
+	}
+
+	dsn := fmt.Sprintf("%s?_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)&_pragma=foreign_keys(ON)", dbPath)
+	sqliteDB, err := sql.Open("sqlite", dsn)
+	if err != nil {
+		return nil, fmt.Errorf("failed to open sqlite database: %w", err)
+	}
+
+	d := &DB{db: sqliteDB}
+	if err := d.initSchema(context.Background()); err != nil {
+		sqliteDB.Close()
+		return nil, fmt.Errorf("failed to initialize schema: %w", err)
+	}
+
+	return d, nil
+}
+
+func (d *DB) Close() error {
+	return d.db.Close()
+}
+
+func (d *DB) initSchema(ctx context.Context) error {
+	schema := `
+	CREATE TABLE IF NOT EXISTS engines (
+		id TEXT PRIMARY KEY,
+		name TEXT NOT NULL,
+		binary_path TEXT NOT NULL,
+		default_args TEXT DEFAULT ''
+	);
+
+	CREATE TABLE IF NOT EXISTS models (
+		id TEXT PRIMARY KEY,
+		name TEXT NOT NULL,
+		engine_id TEXT NOT NULL REFERENCES engines(id),
+		model_path TEXT NOT NULL,
+		mmproj_path TEXT DEFAULT '',
+		mtp_path TEXT DEFAULT '',
+		default_port INTEGER DEFAULT 8088,
+		default_profile TEXT DEFAULT 'default',
+		is_favorite BOOLEAN DEFAULT 0,
+		created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+	);
+
+	CREATE TABLE IF NOT EXISTS profiles (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		model_id TEXT NOT NULL REFERENCES models(id) ON DELETE CASCADE,
+		name TEXT NOT NULL,
+		description TEXT DEFAULT '',
+		ctx_size INTEGER NOT NULL DEFAULT 4096,
+		parallel INTEGER DEFAULT 1,
+		kv_type TEXT DEFAULT 'q8_0',
+		flash_attn TEXT DEFAULT 'auto',
+		use_mtp BOOLEAN DEFAULT 1,
+		use_vision BOOLEAN DEFAULT 0,
+		enable_ui BOOLEAN DEFAULT 1,
+		tools TEXT DEFAULT 'safe',
+		extra_args TEXT DEFAULT '',
+		UNIQUE(model_id, name)
+	);
+
+	CREATE TABLE IF NOT EXISTS runtime_state (
+		model_id TEXT PRIMARY KEY REFERENCES models(id) ON DELETE CASCADE,
+		pid INTEGER DEFAULT 0,
+		port INTEGER NOT NULL,
+		profile_name TEXT NOT NULL,
+		status TEXT NOT NULL,
+		started_at DATETIME,
+		last_error TEXT DEFAULT ''
+	);
+
+	CREATE TABLE IF NOT EXISTS benchmark_logs (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		model_id TEXT NOT NULL,
+		profile_name TEXT NOT NULL,
+		timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
+		prompt_tokens INTEGER,
+		prompt_per_second REAL,
+		predicted_tokens INTEGER,
+		predicted_per_second REAL,
+		success BOOLEAN DEFAULT 1,
+		output_sample TEXT
+	);
+
+	CREATE TABLE IF NOT EXISTS settings (
+		key TEXT PRIMARY KEY,
+		value TEXT NOT NULL
+	);
+	`
+	_, err := d.db.ExecContext(ctx, schema)
+	return err
+}
+
+// Engines
+func (d *DB) SaveEngine(ctx context.Context, e Engine) error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	query := `
+	INSERT INTO engines (id, name, binary_path, default_args)
+	VALUES (?, ?, ?, ?)
+	ON CONFLICT(id) DO UPDATE SET
+		name=excluded.name,
+		binary_path=excluded.binary_path,
+		default_args=excluded.default_args;
+	`
+	_, err := d.db.ExecContext(ctx, query, e.ID, e.Name, e.BinaryPath, e.DefaultArgs)
+	return err
+}
+
+func (d *DB) GetEngine(ctx context.Context, id string) (*Engine, error) {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+	row := d.db.QueryRowContext(ctx, "SELECT id, name, binary_path, default_args FROM engines WHERE id = ?", id)
+	var e Engine
+	if err := row.Scan(&e.ID, &e.Name, &e.BinaryPath, &e.DefaultArgs); err != nil {
+		if err == sql.ErrNoRows {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return &e, nil
+}
+
+func (d *DB) ListEngines(ctx context.Context) ([]Engine, error) {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+	rows, err := d.db.QueryContext(ctx, "SELECT id, name, binary_path, default_args FROM engines ORDER BY id")
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var list []Engine
+	for rows.Next() {
+		var e Engine
+		if err := rows.Scan(&e.ID, &e.Name, &e.BinaryPath, &e.DefaultArgs); err != nil {
+			return nil, err
+		}
+		list = append(list, e)
+	}
+	return list, rows.Err()
+}
+
+// Models
+func (d *DB) SaveModel(ctx context.Context, m Model) error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	query := `
+	INSERT INTO models (id, name, engine_id, model_path, mmproj_path, mtp_path, default_port, default_profile, is_favorite)
+	VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+	ON CONFLICT(id) DO UPDATE SET
+		name=excluded.name,
+		engine_id=excluded.engine_id,
+		model_path=excluded.model_path,
+		mmproj_path=excluded.mmproj_path,
+		mtp_path=excluded.mtp_path,
+		default_port=excluded.default_port,
+		default_profile=excluded.default_profile,
+		is_favorite=excluded.is_favorite;
+	`
+	_, err := d.db.ExecContext(ctx, query, m.ID, m.Name, m.EngineID, m.ModelPath, m.MMProjPath, m.MTPPath, m.DefaultPort, m.DefaultProfile, m.IsFavorite)
+	return err
+}
+
+func (d *DB) GetModel(ctx context.Context, id string) (*Model, error) {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+	row := d.db.QueryRowContext(ctx, `
+		SELECT id, name, engine_id, model_path, mmproj_path, mtp_path, default_port, default_profile, is_favorite, created_at
+		FROM models WHERE id = ?
+	`, id)
+
+	var m Model
+	if err := row.Scan(&m.ID, &m.Name, &m.EngineID, &m.ModelPath, &m.MMProjPath, &m.MTPPath, &m.DefaultPort, &m.DefaultProfile, &m.IsFavorite, &m.CreatedAt); err != nil {
+		if err == sql.ErrNoRows {
+			return nil, nil
+		}
+		return nil, err
+	}
+
+	// Profiles
+	pRows, err := d.db.QueryContext(ctx, `
+		SELECT id, model_id, name, description, ctx_size, parallel, kv_type, flash_attn, use_mtp, use_vision, enable_ui, tools, extra_args
+		FROM profiles WHERE model_id = ? ORDER BY id
+	`, id)
+	if err != nil {
+		return nil, err
+	}
+	defer pRows.Close()
+
+	for pRows.Next() {
+		var p Profile
+		if err := pRows.Scan(&p.ID, &p.ModelID, &p.Name, &p.Description, &p.CtxSize, &p.Parallel, &p.KVType, &p.FlashAttn, &p.UseMTP, &p.UseVision, &p.EnableUI, &p.Tools, &p.ExtraArgs); err != nil {
+			return nil, err
+		}
+		m.Profiles = append(m.Profiles, p)
+	}
+
+	// Runtime state
+	rtRow := d.db.QueryRowContext(ctx, `SELECT model_id, pid, port, profile_name, status, started_at, last_error FROM runtime_state WHERE model_id = ?`, id)
+	var rt RuntimeState
+	if err := rtRow.Scan(&rt.ModelID, &rt.PID, &rt.Port, &rt.ProfileName, &rt.Status, &rt.StartedAt, &rt.LastError); err == nil {
+		m.Runtime = &rt
+	}
+
+	return &m, nil
+}
+
+func (d *DB) ListModels(ctx context.Context) ([]Model, error) {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+	rows, err := d.db.QueryContext(ctx, `
+		SELECT id, name, engine_id, model_path, mmproj_path, mtp_path, default_port, default_profile, is_favorite, created_at
+		FROM models ORDER BY is_favorite DESC, id ASC
+	`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var list []Model
+	for rows.Next() {
+		var m Model
+		if err := rows.Scan(&m.ID, &m.Name, &m.EngineID, &m.ModelPath, &m.MMProjPath, &m.MTPPath, &m.DefaultPort, &m.DefaultProfile, &m.IsFavorite, &m.CreatedAt); err != nil {
+			return nil, err
+		}
+		list = append(list, m)
+	}
+
+	// Populate profiles and runtime states
+	for i := range list {
+		id := list[i].ID
+		pRows, err := d.db.QueryContext(ctx, `
+			SELECT id, model_id, name, description, ctx_size, parallel, kv_type, flash_attn, use_mtp, use_vision, enable_ui, tools, extra_args
+			FROM profiles WHERE model_id = ? ORDER BY id
+		`, id)
+		if err == nil {
+			for pRows.Next() {
+				var p Profile
+				if err := pRows.Scan(&p.ID, &p.ModelID, &p.Name, &p.Description, &p.CtxSize, &p.Parallel, &p.KVType, &p.FlashAttn, &p.UseMTP, &p.UseVision, &p.EnableUI, &p.Tools, &p.ExtraArgs); err == nil {
+					list[i].Profiles = append(list[i].Profiles, p)
+				}
+			}
+			pRows.Close()
+		}
+
+		rtRow := d.db.QueryRowContext(ctx, `SELECT model_id, pid, port, profile_name, status, started_at, last_error FROM runtime_state WHERE model_id = ?`, id)
+		var rt RuntimeState
+		if err := rtRow.Scan(&rt.ModelID, &rt.PID, &rt.Port, &rt.ProfileName, &rt.Status, &rt.StartedAt, &rt.LastError); err == nil {
+			list[i].Runtime = &rt
+		}
+	}
+
+	return list, nil
+}
+
+func (d *DB) DeleteModel(ctx context.Context, id string) error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	_, err := d.db.ExecContext(ctx, "DELETE FROM models WHERE id = ?", id)
+	return err
+}
+
+func (d *DB) SetFavorite(ctx context.Context, id string, isFavorite bool) error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	_, err := d.db.ExecContext(ctx, "UPDATE models SET is_favorite = ? WHERE id = ?", isFavorite, id)
+	return err
+}
+
+func (d *DB) ListFavorites(ctx context.Context) ([]Model, error) {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+	rows, err := d.db.QueryContext(ctx, `
+		SELECT id, name, engine_id, model_path, mmproj_path, mtp_path, default_port, default_profile, is_favorite, created_at
+		FROM models WHERE is_favorite = 1 ORDER BY id
+	`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var list []Model
+	for rows.Next() {
+		var m Model
+		if err := rows.Scan(&m.ID, &m.Name, &m.EngineID, &m.ModelPath, &m.MMProjPath, &m.MTPPath, &m.DefaultPort, &m.DefaultProfile, &m.IsFavorite, &m.CreatedAt); err != nil {
+			return nil, err
+		}
+		list = append(list, m)
+	}
+	return list, nil
+}
+
+// Profiles
+func (d *DB) SaveProfile(ctx context.Context, p Profile) error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	query := `
+	INSERT INTO profiles (model_id, name, description, ctx_size, parallel, kv_type, flash_attn, use_mtp, use_vision, enable_ui, tools, extra_args)
+	VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	ON CONFLICT(model_id, name) DO UPDATE SET
+		description=excluded.description,
+		ctx_size=excluded.ctx_size,
+		parallel=excluded.parallel,
+		kv_type=excluded.kv_type,
+		flash_attn=excluded.flash_attn,
+		use_mtp=excluded.use_mtp,
+		use_vision=excluded.use_vision,
+		enable_ui=excluded.enable_ui,
+		tools=excluded.tools,
+		extra_args=excluded.extra_args;
+	`
+	_, err := d.db.ExecContext(ctx, query, p.ModelID, p.Name, p.Description, p.CtxSize, p.Parallel, p.KVType, p.FlashAttn, p.UseMTP, p.UseVision, p.EnableUI, p.Tools, p.ExtraArgs)
+	return err
+}
+
+func (d *DB) GetProfile(ctx context.Context, modelID, profileName string) (*Profile, error) {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+	row := d.db.QueryRowContext(ctx, `
+		SELECT id, model_id, name, description, ctx_size, parallel, kv_type, flash_attn, use_mtp, use_vision, enable_ui, tools, extra_args
+		FROM profiles WHERE model_id = ? AND name = ?
+	`, modelID, profileName)
+	var p Profile
+	if err := row.Scan(&p.ID, &p.ModelID, &p.Name, &p.Description, &p.CtxSize, &p.Parallel, &p.KVType, &p.FlashAttn, &p.UseMTP, &p.UseVision, &p.EnableUI, &p.Tools, &p.ExtraArgs); err != nil {
+		if err == sql.ErrNoRows {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return &p, nil
+}
+
+// Runtime State
+func (d *DB) SetRuntimeState(ctx context.Context, r RuntimeState) error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	now := time.Now()
+	if r.StartedAt == nil && (r.Status == "starting" || r.Status == "running") {
+		r.StartedAt = &now
+	}
+	query := `
+	INSERT INTO runtime_state (model_id, pid, port, profile_name, status, started_at, last_error)
+	VALUES (?, ?, ?, ?, ?, ?, ?)
+	ON CONFLICT(model_id) DO UPDATE SET
+		pid=excluded.pid,
+		port=excluded.port,
+		profile_name=excluded.profile_name,
+		status=excluded.status,
+		started_at=excluded.started_at,
+		last_error=excluded.last_error;
+	`
+	_, err := d.db.ExecContext(ctx, query, r.ModelID, r.PID, r.Port, r.ProfileName, r.Status, r.StartedAt, r.LastError)
+	return err
+}
+
+func (d *DB) ClearRuntimeState(ctx context.Context, modelID string) error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	_, err := d.db.ExecContext(ctx, "DELETE FROM runtime_state WHERE model_id = ?", modelID)
+	return err
+}
+
+func (d *DB) GetActiveRuntimeStates(ctx context.Context) ([]RuntimeState, error) {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+	rows, err := d.db.QueryContext(ctx, `
+		SELECT model_id, pid, port, profile_name, status, started_at, last_error
+		FROM runtime_state WHERE status IN ('starting', 'running')
+	`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var list []RuntimeState
+	for rows.Next() {
+		var r RuntimeState
+		if err := rows.Scan(&r.ModelID, &r.PID, &r.Port, &r.ProfileName, &r.Status, &r.StartedAt, &r.LastError); err != nil {
+			return nil, err
+		}
+		list = append(list, r)
+	}
+	return list, nil
+}
+
+// Benchmark Logs
+func (d *DB) SaveBenchmarkLog(ctx context.Context, b BenchmarkLog) error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	query := `
+	INSERT INTO benchmark_logs (model_id, profile_name, prompt_tokens, prompt_per_second, predicted_tokens, predicted_per_second, success, output_sample)
+	VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+	`
+	_, err := d.db.ExecContext(ctx, query, b.ModelID, b.ProfileName, b.PromptTokens, b.PromptPerSecond, b.PredictedTokens, b.PredictedPerSecond, b.Success, b.OutputSample)
+	return err
+}
+
+func (d *DB) GetLatestBenchmark(ctx context.Context, modelID string) (*BenchmarkLog, error) {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+	row := d.db.QueryRowContext(ctx, `
+		SELECT id, model_id, profile_name, timestamp, prompt_tokens, prompt_per_second, predicted_tokens, predicted_per_second, success, output_sample
+		FROM benchmark_logs WHERE model_id = ? ORDER BY id DESC LIMIT 1
+	`, modelID)
+	var b BenchmarkLog
+	if err := row.Scan(&b.ID, &b.ModelID, &b.ProfileName, &b.Timestamp, &b.PromptTokens, &b.PromptPerSecond, &b.PredictedTokens, &b.PredictedPerSecond, &b.Success, &b.OutputSample); err != nil {
+		if err == sql.ErrNoRows {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return &b, nil
+}
+
+// Settings
+func (d *DB) SetSetting(ctx context.Context, key, value string) error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	_, err := d.db.ExecContext(ctx, `
+		INSERT INTO settings (key, value) VALUES (?, ?)
+		ON CONFLICT(key) DO UPDATE SET value=excluded.value
+	`, key, value)
+	return err
+}
+
+func (d *DB) GetSetting(ctx context.Context, key string) (string, error) {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+	row := d.db.QueryRowContext(ctx, "SELECT value FROM settings WHERE key = ?", key)
+	var v string
+	if err := row.Scan(&v); err != nil {
+		if err == sql.ErrNoRows {
+			return "", nil
+		}
+		return "", err
+	}
+	return v, nil
+}

@@ -1,0 +1,207 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>LLM Control Center</title>
+  <style>
+    :root {
+      --bg: #0f172a;
+      --card-bg: #1e293b;
+      --card-border: #334155;
+      --text: #f8fafc;
+      --text-muted: #94a3b8;
+      --primary: #3b82f6;
+      --primary-hover: #2563eb;
+      --success: #10b981;
+      --warning: #f59e0b;
+      --danger: #ef4444;
+      --danger-hover: #dc2626;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+    body { background: var(--bg); color: var(--text); padding: 24px; }
+    header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 24px; flex-wrap: wrap; gap: 16px; border-bottom: 1px solid var(--card-border); padding-bottom: 16px; }
+    h1 { font-size: 24px; font-weight: 700; display: flex; align-items: center; gap: 8px; }
+    .system-badges { display: flex; gap: 12px; flex-wrap: wrap; }
+    .badge { background: var(--card-bg); border: 1px solid var(--card-border); padding: 6px 12px; border-radius: 8px; font-size: 13px; display: flex; align-items: center; gap: 6px; }
+    .badge-val { font-weight: 600; color: var(--primary); }
+    .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(340px, 1fr)); gap: 20px; }
+    .card { background: var(--card-bg); border: 1px solid var(--card-border); border-radius: 12px; padding: 20px; display: flex; flex-direction: column; gap: 14px; position: relative; }
+    .card-header { display: flex; justify-content: space-between; align-items: flex-start; }
+    .card-title { font-size: 18px; font-weight: 600; }
+    .card-subtitle { font-size: 12px; color: var(--text-muted); font-family: monospace; }
+    .status-pill { padding: 4px 10px; border-radius: 20px; font-size: 12px; font-weight: 600; text-transform: uppercase; }
+    .status-running { background: rgba(16, 185, 129, 0.2); color: var(--success); border: 1px solid var(--success); }
+    .status-stopped { background: rgba(148, 163, 184, 0.1); color: var(--text-muted); border: 1px solid var(--card-border); }
+    .status-starting { background: rgba(245, 158, 11, 0.2); color: var(--warning); border: 1px solid var(--warning); }
+    .meta-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; font-size: 13px; color: var(--text-muted); background: #0f172a80; padding: 10px; border-radius: 8px; }
+    .meta-item b { color: var(--text); }
+    .controls { display: flex; gap: 8px; align-items: center; margin-top: auto; }
+    select, button { padding: 8px 12px; border-radius: 6px; border: 1px solid var(--card-border); background: var(--card-bg); color: var(--text); font-size: 13px; cursor: pointer; transition: all 0.2s; }
+    select { flex: 1; outline: none; }
+    button.btn-primary { background: var(--primary); border-color: var(--primary); font-weight: 600; }
+    button.btn-primary:hover { background: var(--primary-hover); }
+    button.btn-danger { background: var(--danger); border-color: var(--danger); font-weight: 600; }
+    button.btn-danger:hover { background: var(--danger-hover); }
+    button:disabled { opacity: 0.5; cursor: not-allowed; }
+    .logs-panel { margin-top: 30px; background: var(--card-bg); border: 1px solid var(--card-border); border-radius: 12px; padding: 20px; }
+    .logs-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; }
+    pre#logs { background: #000; color: #10b981; font-family: monospace; font-size: 12px; padding: 16px; border-radius: 8px; max-height: 300px; overflow-y: auto; white-space: pre-wrap; }
+    .fav-btn { background: none; border: none; font-size: 18px; cursor: pointer; color: #fbbf24; padding: 0; }
+  </style>
+</head>
+<body>
+  <header>
+    <div>
+      <h1>⚡ LLM Control Center</h1>
+      <div style="font-size: 13px; color: var(--text-muted); margin-top: 4px;">Intel Arc A770 / Vulkan & SYCL LLM Engine</div>
+    </div>
+    <div class="system-badges">
+      <div class="badge">🧠 RAM: <span id="ram-badge" class="badge-val">--</span></div>
+      <div class="badge">🎮 VRAM: <span id="vram-badge" class="badge-val">--</span></div>
+      <button class="btn-danger" onclick="stopAll()">⏹ Stop All</button>
+      <button onclick="loadAll()">🔄 Refresh</button>
+    </div>
+  </header>
+
+  <div class="grid" id="models-grid"></div>
+
+  <div class="logs-panel">
+    <div class="logs-header">
+      <h3>📜 Live Logs: <span id="log-model-name" style="color: var(--primary);">выберите модель</span></h3>
+      <div>
+        <button onclick="refreshLogs()">Обновить логи</button>
+      </div>
+    </div>
+    <pre id="logs">Выберите модель для просмотра логов...</pre>
+  </div>
+
+  <script>
+    let activeLogModel = "";
+
+    async function loadAll() {
+      try {
+        const [statusRes, modelsRes] = await Promise.all([
+          fetch('/api/status').then(r => r.json()),
+          fetch('/api/models').then(r => r.json())
+        ]);
+
+        document.getElementById('ram-badge').innerText = `${statusRes.system.ram_used_mb} / ${statusRes.system.ram_total_mb} MB (${statusRes.system.ram_usage_pct.toFixed(0)}%)`;
+        if (statusRes.system.vram_total_mb > 0) {
+          document.getElementById('vram-badge').innerText = `${statusRes.system.vram_used_mb} / ${statusRes.system.vram_total_mb} MB (${statusRes.system.vram_usage_pct.toFixed(0)}%)`;
+        } else {
+          document.getElementById('vram-badge').innerText = `Vulkan / Shared`;
+        }
+
+        renderModels(modelsRes);
+      } catch (err) {
+        console.error("Failed to load status/models:", err);
+      }
+    }
+
+    function renderModels(models) {
+      const grid = document.getElementById('models-grid');
+      grid.innerHTML = '';
+
+      models.forEach(m => {
+        const isRunning = m.runtime && m.runtime.status === 'running';
+        const isStarting = m.runtime && m.runtime.status === 'starting';
+        const statusClass = isRunning ? 'status-running' : (isStarting ? 'status-starting' : 'status-stopped');
+        const statusText = isRunning ? 'Running' : (isStarting ? 'Starting...' : 'Stopped');
+
+        const card = document.createElement('div');
+        card.className = 'card';
+        card.innerHTML = `
+          <div class="card-header">
+            <div>
+              <div class="card-title">${m.name} <button class="fav-btn" onclick="toggleFav('${m.id}', ${!m.is_favorite})">${m.is_favorite ? '★' : '☆'}</button></div>
+              <div class="card-subtitle">${m.id} | Engine: ${m.engine_id}</div>
+            </div>
+            <span class="status-pill ${statusClass}">${statusText}</span>
+          </div>
+
+          <div class="meta-grid">
+            <div class="meta-item">Port: <b>${m.default_port}</b></div>
+            <div class="meta-item">PID: <b>${m.runtime ? m.runtime.pid || '-' : '-'}</b></div>
+            <div class="meta-item">MTP Spec: <b>${m.mtp_path ? 'Yes' : 'No'}</b></div>
+            <div class="meta-item">Vision: <b>${m.mmproj_path ? 'Yes' : 'No'}</b></div>
+          </div>
+
+          <div class="controls">
+            <select id="prof-${m.id}" ${isRunning ? 'disabled' : ''}>
+              ${(m.profiles || []).map(p => `<option value="${p.name}" ${p.name === (m.runtime?.profile_name || m.default_profile) ? 'selected' : ''}>Profile: ${p.name} (ctx ${p.ctx_size})</option>`).join('')}
+            </select>
+            ${isRunning 
+              ? `<button class="btn-danger" onclick="stopModel('${m.id}')">Stop</button>
+                 <button onclick="benchModel('${m.id}')">Bench</button>`
+              : `<button class="btn-primary" onclick="startModel('${m.id}')">Start</button>`
+            }
+            <button onclick="showLogs('${m.id}')">Logs</button>
+          </div>
+        `;
+        grid.appendChild(card);
+      });
+    }
+
+    async function startModel(id) {
+      const select = document.getElementById(`prof-${id}`);
+      const profile = select ? select.value : 'default';
+      await fetch(`/api/models/${id}/start`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ profile })
+      });
+      loadAll();
+      showLogs(id);
+    }
+
+    async function stopModel(id) {
+      await fetch(`/api/models/${id}/stop`, { method: 'POST' });
+      loadAll();
+    }
+
+    async function stopAll() {
+      await fetch(`/api/models/stop-all`, { method: 'POST' });
+      loadAll();
+    }
+
+    async function toggleFav(id, fav) {
+      await fetch(`/api/models/${id}/favorite`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ favorite: fav })
+      });
+      loadAll();
+    }
+
+    async function benchModel(id) {
+      const pre = document.getElementById('logs');
+      pre.innerText = `Running benchmark on ${id} (prompt 7*8=)...`;
+      const res = await fetch(`/api/models/${id}/bench`, { method: 'POST' }).then(r => r.json());
+      pre.innerText = JSON.stringify(res, null, 2);
+    }
+
+    async function showLogs(id) {
+      activeLogModel = id;
+      document.getElementById('log-model-name').innerText = id;
+      refreshLogs();
+    }
+
+    async function refreshLogs() {
+      if (!activeLogModel) return;
+      const logs = await fetch(`/api/models/${activeLogModel}/logs?lines=60`).then(r => r.text());
+      document.getElementById('logs').innerText = logs || "(нет записей)";
+    }
+
+    // SSE events for realtime updates
+    const evtSource = new EventSource('/api/events');
+    evtSource.onmessage = () => {
+      loadAll();
+      if (activeLogModel) refreshLogs();
+    };
+
+    loadAll();
+    setInterval(loadAll, 5000);
+  </script>
+</body>
+</html>

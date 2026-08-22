@@ -1,0 +1,186 @@
+package supervisor
+
+import (
+	"context"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/antifreezzz/llmcontrol/internal/db"
+)
+
+func setupTestSupervisor(t *testing.T) (*Supervisor, *db.DB, string) {
+	t.Helper()
+	tmpDir, err := os.MkdirTemp("", "llmctl_sup_*")
+	if err != nil {
+		t.Fatalf("failed to create temp dir: %v", err)
+	}
+	t.Cleanup(func() {
+		os.RemoveAll(tmpDir)
+	})
+
+	dbPath := filepath.Join(tmpDir, "test.db")
+	database, err := db.NewDB(dbPath)
+	if err != nil {
+		t.Fatalf("failed to init db: %v", err)
+	}
+	t.Cleanup(func() {
+		database.Close()
+	})
+
+	sup := NewSupervisor(SupervisorConfig{
+		DB:            database,
+		LogDir:        filepath.Join(tmpDir, "logs"),
+		Host:          "127.0.0.1",
+		ExclusiveMode: true,
+	})
+
+	return sup, database, tmpDir
+}
+
+func TestBuildArgs(t *testing.T) {
+	sup, _, _ := setupTestSupervisor(t)
+
+	model := &db.Model{
+		ID:          "gemma4",
+		Name:        "Gemma 4",
+		EngineID:    "llama-vk",
+		ModelPath:   "/models/gemma4.gguf",
+		MMProjPath:  "/models/mmproj.gguf",
+		MTPPath:     "/models/mtp.gguf",
+		DefaultPort: 8088,
+	}
+
+	profile := &db.Profile{
+		ModelID:   "gemma4",
+		Name:      "fast",
+		CtxSize:   2048,
+		Parallel:  1,
+		KVType:    "q4_0",
+		FlashAttn: "on",
+		UseMTP:    true,
+		UseVision: false,
+		EnableUI:  true,
+		Tools:     "safe",
+	}
+
+	args := sup.BuildArgs(model, profile, 8088)
+	argsStr := strings.Join(args, " ")
+
+	if !strings.Contains(argsStr, "-m /models/gemma4.gguf") {
+		t.Errorf("missing -m flag: %s", argsStr)
+	}
+	if !strings.Contains(argsStr, "--port 8088") {
+		t.Errorf("missing --port flag: %s", argsStr)
+	}
+	if !strings.Contains(argsStr, "-c 2048") {
+		t.Errorf("missing -c flag: %s", argsStr)
+	}
+	if !strings.Contains(argsStr, "--cache-type-k q4_0") {
+		t.Errorf("missing cache-type-k: %s", argsStr)
+	}
+	if !strings.Contains(argsStr, "--flash-attn") {
+		t.Errorf("missing flash-attn: %s", argsStr)
+	}
+	if !strings.Contains(argsStr, "-md /models/mtp.gguf") {
+		t.Errorf("missing -md mtp flag: %s", argsStr)
+	}
+}
+
+func TestBenchmarkRunner(t *testing.T) {
+	ctx := context.Background()
+	// Mock llama-server HTTP
+	mockServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/chat/completions" {
+			w.Header().Set("Content-Type", "application/json")
+			w.Write([]byte(`{
+				"choices": [{"message": {"content": "56"}}],
+				"timings": {
+					"prompt_n": 10,
+					"prompt_per_second": 125.4,
+					"predicted_n": 2,
+					"predicted_per_second": 42.8
+				}
+			}`))
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer mockServer.Close()
+
+	sup, database, _ := setupTestSupervisor(t)
+
+	// Save engine and model
+	_ = database.SaveEngine(ctx, db.Engine{ID: "e1", Name: "E1", BinaryPath: "/bin/true"})
+	_ = database.SaveModel(ctx, db.Model{ID: "m1", Name: "M1", EngineID: "e1", ModelPath: "/m.gguf"})
+	_ = database.SaveProfile(ctx, db.Profile{ModelID: "m1", Name: "default", CtxSize: 4096})
+
+	res, err := sup.runBenchmarkOnURL(ctx, "m1", "default", mockServer.URL)
+	if err != nil {
+		t.Fatalf("failed to run benchmark: %v", err)
+	}
+
+	if res.PromptPerSecond != 125.4 || res.PredictedPerSecond != 42.8 {
+		t.Errorf("unexpected bench result: %+v", res)
+	}
+	if res.OutputSample != "56" {
+		t.Errorf("unexpected output sample: %s", res.OutputSample)
+	}
+
+	// Verify saved to DB
+	latest, err := database.GetLatestBenchmark(ctx, "m1")
+	if err != nil || latest == nil {
+		t.Fatalf("failed to get latest bench log: %v", err)
+	}
+	if latest.PredictedPerSecond != 42.8 {
+		t.Errorf("saved bench mismatch: %+v", latest)
+	}
+}
+
+func TestProcessLifecycle(t *testing.T) {
+	ctx := context.Background()
+	sup, database, _ := setupTestSupervisor(t)
+
+	// Use `sleep 10` as a mock server process
+	_ = database.SaveEngine(ctx, db.Engine{ID: "sleep-eng", Name: "Sleep", BinaryPath: "/bin/sleep"})
+	_ = database.SaveModel(ctx, db.Model{ID: "test-model", Name: "Test Model", EngineID: "sleep-eng", ModelPath: "10", DefaultPort: 9999})
+	_ = database.SaveProfile(ctx, db.Profile{ModelID: "test-model", Name: "default", CtxSize: 2048})
+
+	// Start without healthcheck waiting for this mock test
+	cmd, err := sup.StartProcessOnly(ctx, "test-model", "default")
+	if err != nil {
+		t.Fatalf("failed to start process: %v", err)
+	}
+	if cmd == nil || cmd.Process == nil {
+		t.Fatalf("process was not launched")
+	}
+
+	// Verify state in DB
+	m, err := database.GetModel(ctx, "test-model")
+	if err != nil || m == nil || m.Runtime == nil {
+		t.Fatalf("runtime state not saved in DB: %+v", m)
+	}
+	if m.Runtime.Status != "starting" && m.Runtime.Status != "running" {
+		t.Errorf("unexpected status: %s", m.Runtime.Status)
+	}
+
+	time.Sleep(50 * time.Millisecond)
+
+	// Stop model
+	if err := sup.StopModel(ctx, "test-model"); err != nil {
+		t.Fatalf("failed to stop model: %v", err)
+	}
+
+	// Verify stopped state
+	mAfter, err := database.GetModel(ctx, "test-model")
+	if err != nil || mAfter == nil {
+		t.Fatalf("failed to get model after stop")
+	}
+	if mAfter.Runtime != nil && mAfter.Runtime.Status != "stopped" {
+		t.Errorf("expected stopped status, got: %+v", mAfter.Runtime)
+	}
+}
