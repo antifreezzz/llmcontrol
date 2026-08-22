@@ -83,4 +83,35 @@ func TestMCPExecuteTool(t *testing.T) {
 	if err != nil || statResp.IsError {
 		t.Fatalf("failed to call llm_get_status: %v", err)
 	}
+
+	// Call llm_save_model
+	saveResp, err := srv.CallTool(ctx, "llm_save_model", json.RawMessage(`{"id":"test-model","name":"Test Model","engine_id":"e1","model_path":"/path/to/test.gguf"}`))
+	if err != nil || saveResp.IsError {
+		t.Fatalf("failed to call llm_save_model: %v, resp: %+v", err, saveResp)
+	}
+
+	// Call llm_save_profile
+	profResp, err := srv.CallTool(ctx, "llm_save_profile", json.RawMessage(`{"model_id":"test-model","name":"test-prof","ctx_size":8192}`))
+	if err != nil || profResp.IsError {
+		t.Fatalf("failed to call llm_save_profile: %v", err)
+	}
+
+	// Call llm_set_favorite
+	favResp, err := srv.CallTool(ctx, "llm_set_favorite", json.RawMessage(`{"model_id":"test-model","is_favorite":true}`))
+	if err != nil || favResp.IsError {
+		t.Fatalf("failed to call llm_set_favorite: %v", err)
+	}
+
+	// Call llm_delete_profile
+	delProfResp, err := srv.CallTool(ctx, "llm_delete_profile", json.RawMessage(`{"model_id":"test-model","profile_name":"test-prof"}`))
+	if err != nil || delProfResp.IsError {
+		t.Fatalf("failed to call llm_delete_profile: %v", err)
+	}
+
+	// Call llm_delete_model
+	delResp, err := srv.CallTool(ctx, "llm_delete_model", json.RawMessage(`{"model_id":"test-model"}`))
+	if err != nil || delResp.IsError {
+		t.Fatalf("failed to call llm_delete_model: %v", err)
+	}
 }
+

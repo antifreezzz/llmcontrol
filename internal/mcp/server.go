@@ -147,6 +147,82 @@ func (s *Server) ListTools() []Tool {
 				"required": []string{"model_id"},
 			},
 		},
+		{
+			Name:        "llm_save_model",
+			Description: "Create or update a model configuration in llmcontrol.",
+			InputSchema: map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"id":              map[string]interface{}{"type": "string", "description": "Unique model identifier (e.g. 'ornith', 'ornith-35b')"},
+					"name":            map[string]interface{}{"type": "string", "description": "Display name of the model"},
+					"engine_id":       map[string]interface{}{"type": "string", "description": "Engine ID ('llama-vk' or 'llama-sycl'), default: 'llama-vk'"},
+					"model_path":      map[string]interface{}{"type": "string", "description": "Absolute path to model GGUF"},
+					"mmproj_path":     map[string]interface{}{"type": "string", "description": "Absolute path to mmproj GGUF (Vision CLIP adapter, optional)"},
+					"mtp_path":        map[string]interface{}{"type": "string", "description": "Absolute path to MTP draft GGUF (optional)"},
+					"default_port":    map[string]interface{}{"type": "integer", "description": "Default server port (default 8080)"},
+					"default_profile": map[string]interface{}{"type": "string", "description": "Default profile name (default 'default')"},
+					"is_favorite":     map[string]interface{}{"type": "boolean", "description": "Whether model is marked as favorite"},
+				},
+				"required": []string{"id", "name", "model_path"},
+			},
+		},
+		{
+			Name:        "llm_delete_model",
+			Description: "Delete a model configuration by ID.",
+			InputSchema: map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"model_id": map[string]interface{}{"type": "string", "description": "ID of the model to delete"},
+				},
+				"required": []string{"model_id"},
+			},
+		},
+		{
+			Name:        "llm_save_profile",
+			Description: "Create or update a profile for a model.",
+			InputSchema: map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"model_id":    map[string]interface{}{"type": "string", "description": "Model ID"},
+					"name":        map[string]interface{}{"type": "string", "description": "Profile name (e.g. 'default', 'fast', 'vision')"},
+					"description": map[string]interface{}{"type": "string", "description": "Human description of profile settings"},
+					"ctx_size":    map[string]interface{}{"type": "integer", "description": "Context size in tokens"},
+					"parallel":    map[string]interface{}{"type": "integer", "description": "Number of parallel slots (default 1)"},
+					"kv_type":     map[string]interface{}{"type": "string", "description": "KV cache quantization: 'q8_0', 'q4_0', 'f16'"},
+					"flash_attn":  map[string]interface{}{"type": "string", "description": "Flash attention: 'on', 'off', 'auto'"},
+					"use_mtp":     map[string]interface{}{"type": "boolean", "description": "Enable MTP speculative decoding if available"},
+					"use_vision":  map[string]interface{}{"type": "boolean", "description": "Enable Vision mmproj projector"},
+					"enable_ui":   map[string]interface{}{"type": "boolean", "description": "Enable llama-server WebUI"},
+					"tools":       map[string]interface{}{"type": "string", "description": "Tools mode: 'safe', 'all', or empty"},
+					"extra_args":  map[string]interface{}{"type": "string", "description": "Extra CLI flags to pass to llama-server"},
+				},
+				"required": []string{"model_id", "name", "ctx_size"},
+			},
+		},
+		{
+			Name:        "llm_delete_profile",
+			Description: "Delete a profile of a model.",
+			InputSchema: map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"model_id":     map[string]interface{}{"type": "string", "description": "Model ID"},
+					"profile_name": map[string]interface{}{"type": "string", "description": "Profile name"},
+				},
+				"required": []string{"model_id", "profile_name"},
+			},
+		},
+		{
+			Name:        "llm_set_favorite",
+			Description: "Set or unset a model as favorite.",
+			InputSchema: map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"model_id":    map[string]interface{}{"type": "string", "description": "Model ID"},
+					"is_favorite": map[string]interface{}{"type": "boolean", "description": "Favorite flag"},
+				},
+				"required": []string{"model_id", "is_favorite"},
+			},
+		},
 	}
 }
 
@@ -226,6 +302,83 @@ func (s *Server) CallTool(ctx context.Context, name string, argsRaw json.RawMess
 			return &ToolResult{IsError: true, Content: []ToolContent{{Type: "text", Text: err.Error()}}}, nil
 		}
 		return &ToolResult{Content: []ToolContent{{Type: "text", Text: logs}}}, nil
+
+	case "llm_save_model":
+		var m db.Model
+		if err := json.Unmarshal(argsRaw, &m); err != nil {
+			return &ToolResult{IsError: true, Content: []ToolContent{{Type: "text", Text: "invalid arguments: " + err.Error()}}}, nil
+		}
+		if m.ID == "" || m.Name == "" || m.ModelPath == "" {
+			return &ToolResult{IsError: true, Content: []ToolContent{{Type: "text", Text: "id, name, and model_path are required"}}}, nil
+		}
+		if m.EngineID == "" {
+			m.EngineID = "llama-vk"
+		}
+		if m.DefaultPort <= 0 {
+			m.DefaultPort = 8080
+		}
+		if m.DefaultProfile == "" {
+			m.DefaultProfile = "default"
+		}
+		if err := s.db.SaveModel(ctx, m); err != nil {
+			return &ToolResult{IsError: true, Content: []ToolContent{{Type: "text", Text: err.Error()}}}, nil
+		}
+		return &ToolResult{Content: []ToolContent{{Type: "text", Text: fmt.Sprintf("Model '%s' saved successfully", m.ID)}}}, nil
+
+	case "llm_delete_model":
+		var args struct {
+			ModelID string `json:"model_id"`
+		}
+		if err := json.Unmarshal(argsRaw, &args); err != nil || args.ModelID == "" {
+			return &ToolResult{IsError: true, Content: []ToolContent{{Type: "text", Text: "model_id is required"}}}, nil
+		}
+		_ = s.supervisor.StopModel(ctx, args.ModelID)
+		if err := s.db.DeleteModel(ctx, args.ModelID); err != nil {
+			return &ToolResult{IsError: true, Content: []ToolContent{{Type: "text", Text: err.Error()}}}, nil
+		}
+		return &ToolResult{Content: []ToolContent{{Type: "text", Text: fmt.Sprintf("Model '%s' deleted successfully", args.ModelID)}}}, nil
+
+	case "llm_save_profile":
+		var p db.Profile
+		if err := json.Unmarshal(argsRaw, &p); err != nil {
+			return &ToolResult{IsError: true, Content: []ToolContent{{Type: "text", Text: "invalid arguments: " + err.Error()}}}, nil
+		}
+		if p.ModelID == "" || p.Name == "" {
+			return &ToolResult{IsError: true, Content: []ToolContent{{Type: "text", Text: "model_id and name are required"}}}, nil
+		}
+		if p.CtxSize <= 0 {
+			p.CtxSize = 4096
+		}
+		if err := s.db.SaveProfile(ctx, p); err != nil {
+			return &ToolResult{IsError: true, Content: []ToolContent{{Type: "text", Text: err.Error()}}}, nil
+		}
+		return &ToolResult{Content: []ToolContent{{Type: "text", Text: fmt.Sprintf("Profile '%s' for model '%s' saved successfully", p.Name, p.ModelID)}}}, nil
+
+	case "llm_delete_profile":
+		var args struct {
+			ModelID     string `json:"model_id"`
+			ProfileName string `json:"profile_name"`
+		}
+		if err := json.Unmarshal(argsRaw, &args); err != nil || args.ModelID == "" || args.ProfileName == "" {
+			return &ToolResult{IsError: true, Content: []ToolContent{{Type: "text", Text: "model_id and profile_name are required"}}}, nil
+		}
+		if err := s.db.DeleteProfile(ctx, args.ModelID, args.ProfileName); err != nil {
+			return &ToolResult{IsError: true, Content: []ToolContent{{Type: "text", Text: err.Error()}}}, nil
+		}
+		return &ToolResult{Content: []ToolContent{{Type: "text", Text: fmt.Sprintf("Profile '%s' for model '%s' deleted successfully", args.ProfileName, args.ModelID)}}}, nil
+
+	case "llm_set_favorite":
+		var args struct {
+			ModelID    string `json:"model_id"`
+			IsFavorite bool   `json:"is_favorite"`
+		}
+		if err := json.Unmarshal(argsRaw, &args); err != nil || args.ModelID == "" {
+			return &ToolResult{IsError: true, Content: []ToolContent{{Type: "text", Text: "model_id is required"}}}, nil
+		}
+		if err := s.db.SetFavorite(ctx, args.ModelID, args.IsFavorite); err != nil {
+			return &ToolResult{IsError: true, Content: []ToolContent{{Type: "text", Text: err.Error()}}}, nil
+		}
+		return &ToolResult{Content: []ToolContent{{Type: "text", Text: fmt.Sprintf("Favorite status for model '%s' updated to %v", args.ModelID, args.IsFavorite)}}}, nil
 
 	default:
 		return &ToolResult{IsError: true, Content: []ToolContent{{Type: "text", Text: fmt.Sprintf("Unknown tool: %s", name)}}}, nil
