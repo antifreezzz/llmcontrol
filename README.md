@@ -141,14 +141,18 @@ journalctl --user -u llmcontrol -f
 | `GET` | `/api/status` | Current active model, TPS, VRAM, RAM, CPU usage |
 | `GET` | `/api/models` | List all models, profiles, and runtime status |
 | `POST` | `/api/models` | Create a new model configuration |
+| `GET` | `/api/models/:id` | Get specific model details |
 | `PUT` | `/api/models/:id` | Update model properties and profiles |
 | `DELETE` | `/api/models/:id` | Delete a model |
 | `POST` | `/api/models/:id/start` | Start model (`{"profile":"fast"}`) |
 | `POST` | `/api/models/:id/stop` | Stop specific model |
 | `POST` | `/api/models/stop-all` | Stop all active inference processes |
-| `POST` | `/api/models/:id/benchmark` | Run automated token speed test |
+| `POST` | `/api/models/:id/bench` | Run automated token speed test |
 | `POST` | `/api/models/:id/profiles` | Create or update an inference profile |
 | `DELETE` | `/api/models/:id/profiles/:name` | Delete a profile |
+| `POST` | `/api/models/:id/favorite` | Toggle favorite status |
+| `GET` | `/api/models/:id/logs?lines=N` | Get model log tail |
+| `GET` | `/api/events` | Server-Sent Events stream |
 
 ---
 
@@ -168,11 +172,18 @@ Add `llmcontrol` as an MCP tool provider to Claude Desktop or Cursor:
 ```
 
 Available MCP Tools:
-- `list_models`: Returns all configured models and their status.
-- `start_model`: Starts a model with an optional profile name.
-- `stop_all_models`: Immediately terminates running inference servers.
-- `get_system_status`: Inspects active model, TPS, and VRAM / RAM metrics.
-- `benchmark_model`: Runs a benchmark evaluation.
+- `llm_list_models`: Returns all configured models and their status.
+- `llm_get_status`: Inspects active model, TPS, and VRAM / RAM metrics.
+- `llm_start_model`: Starts a model with an optional profile name.
+- `llm_stop_model`: Stops a running model by ID.
+- `llm_stop_all`: Immediately terminates running inference servers.
+- `llm_benchmark`: Runs a benchmark evaluation.
+- `llm_get_logs`: Get model log tail.
+- `llm_save_model`: Create or update a model configuration.
+- `llm_delete_model`: Delete a model configuration by ID.
+- `llm_save_profile`: Create or update an inference profile.
+- `llm_delete_profile`: Delete a profile of a model.
+- `llm_set_favorite`: Set or unset a model as favorite.
 
 ---
 

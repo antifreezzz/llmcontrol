@@ -179,6 +179,9 @@ func (s *Supervisor) StartProcessOnly(ctx context.Context, modelID, profileName 
 	args := s.BuildArgs(model, profile, port)
 	cmd := exec.Command(binPath, args...)
 
+	// Run in its own session so the process survives daemon restart
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+
 	// Setup SYCL environment variables if running SYCL
 	if strings.Contains(binPath, "sycl") || model.EngineID == "llama-sycl" {
 		syclRT := filepath.Join(homeDir, ".local", "share", "oneapi-sycl-2025.3") + ":" + filepath.Join(homeDir, "llama-sycl", "llama-latest")
@@ -467,4 +470,81 @@ func (s *Supervisor) GetLogs(modelID string, lines int) (string, error) {
 	}
 
 	return strings.Join(allLines, "\n"), nil
+}
+
+// ReattachRunning re-adopts running llama-server processes that survived a daemon restart.
+// It loads runtime_state entries with status running/starting, verifies PID liveness
+// and healthcheck, and starts background monitoring for re-adopted processes.
+func (s *Supervisor) ReattachRunning(ctx context.Context) {
+	active, err := s.db.GetActiveRuntimeStates(ctx)
+	if err != nil || len(active) == 0 {
+		return
+	}
+
+	client := &http.Client{Timeout: 3 * time.Second}
+
+	for _, rt := range active {
+		if !db.IsPIDAlive(rt.PID) {
+			_ = s.db.SetRuntimeState(ctx, db.RuntimeState{
+				ModelID:     rt.ModelID,
+				PID:         0,
+				Port:        rt.Port,
+				ProfileName: rt.ProfileName,
+				Status:      "stopped",
+			})
+			continue
+		}
+
+		// PID is alive — verify healthcheck
+		healthURL := fmt.Sprintf("http://%s:%d/health", s.host, rt.Port)
+		resp, err := client.Get(healthURL)
+		if err != nil || resp.StatusCode != 200 {
+			if resp != nil {
+				resp.Body.Close()
+			}
+			// Process exists but not responding — mark as-is, it may still be starting
+			fmt.Printf("⚠️  Model '%s' (PID %d) alive but health check failed, keeping state '%s'\n", rt.ModelID, rt.PID, rt.Status)
+			s.startOrphanMonitor(rt.ModelID, rt.PID, rt.Port, rt.ProfileName)
+			continue
+		}
+		resp.Body.Close()
+
+		// Healthy — update status to running and start monitoring
+		_ = s.db.SetRuntimeState(ctx, db.RuntimeState{
+			ModelID:     rt.ModelID,
+			PID:         rt.PID,
+			Port:        rt.Port,
+			ProfileName: rt.ProfileName,
+			Status:      "running",
+			StartedAt:   rt.StartedAt,
+		})
+		fmt.Printf("🔗 Re-attached to model '%s' (PID %d, port %d, profile '%s')\n", rt.ModelID, rt.PID, rt.Port, rt.ProfileName)
+		s.broadcastEvent(fmt.Sprintf("model:%s:running", rt.ModelID))
+		s.startOrphanMonitor(rt.ModelID, rt.PID, rt.Port, rt.ProfileName)
+	}
+}
+
+// startOrphanMonitor watches a re-adopted process (we don't have its exec.Cmd)
+// by periodically checking if the PID is still alive. When it dies, updates
+// runtime_state to stopped.
+func (s *Supervisor) startOrphanMonitor(modelID string, pid, port int, profileName string) {
+	go func() {
+		for {
+			time.Sleep(5 * time.Second)
+			if !db.IsPIDAlive(pid) {
+				s.mu.Lock()
+				delete(s.runningCmds, modelID)
+				_ = s.db.SetRuntimeState(context.Background(), db.RuntimeState{
+					ModelID:     modelID,
+					PID:         0,
+					Port:        port,
+					ProfileName: profileName,
+					Status:      "stopped",
+				})
+				s.mu.Unlock()
+				s.broadcastEvent(fmt.Sprintf("model:%s:stopped", modelID))
+				return
+			}
+		}
+	}()
 }

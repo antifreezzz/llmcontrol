@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 )
 
@@ -69,6 +70,22 @@ func LoadConfig(customPath string) (Config, error) {
 	// Environment variable overrides
 	if envToken := os.Getenv("TELEGRAM_TOKEN"); envToken != "" {
 		cfg.TelegramToken = envToken
+	}
+	if envAdminID := os.Getenv("TELEGRAM_ADMIN_ID"); envAdminID != "" {
+		if id, err := strconv.ParseInt(envAdminID, 10, 64); err == nil {
+			cfg.TelegramAdminID = id
+		}
+	}
+	if envPort := os.Getenv("HTTP_PORT"); envPort != "" {
+		if p, err := strconv.Atoi(envPort); err == nil && p > 0 {
+			cfg.HTTPPort = p
+		}
+	}
+	if envDBPath := os.Getenv("DB_PATH"); envDBPath != "" {
+		cfg.DBPath = envDBPath
+	}
+	if envLogDir := os.Getenv("LOG_DIR"); envLogDir != "" {
+		cfg.LogDir = envLogDir
 	}
 
 	return cfg, nil

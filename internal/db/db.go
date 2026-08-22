@@ -395,22 +395,24 @@ func (d *DB) ClearRuntimeState(ctx context.Context, modelID string) error {
 }
 
 func (d *DB) GetActiveRuntimeStates(ctx context.Context) ([]RuntimeState, error) {
+	var list []RuntimeState
+	var deadIDs []string
+
+	// Read phase under RLock
 	d.mu.RLock()
-	defer d.mu.RUnlock()
 	rows, err := d.db.QueryContext(ctx, `
 		SELECT model_id, pid, port, profile_name, status, started_at, last_error
 		FROM runtime_state WHERE status IN ('starting', 'running')
 	`)
 	if err != nil {
+		d.mu.RUnlock()
 		return nil, err
 	}
-	defer rows.Close()
-
-	var list []RuntimeState
-	var deadIDs []string
 	for rows.Next() {
 		var r RuntimeState
 		if err := rows.Scan(&r.ModelID, &r.PID, &r.Port, &r.ProfileName, &r.Status, &r.StartedAt, &r.LastError); err != nil {
+			rows.Close()
+			d.mu.RUnlock()
 			return nil, err
 		}
 		if IsPIDAlive(r.PID) {
@@ -419,33 +421,30 @@ func (d *DB) GetActiveRuntimeStates(ctx context.Context) ([]RuntimeState, error)
 			deadIDs = append(deadIDs, r.ModelID)
 		}
 	}
+	rows.Close()
+	d.mu.RUnlock()
 
+	// Cleanup phase under write Lock — synchronous, no goroutine
 	if len(deadIDs) > 0 {
-		go func(ids []string) {
-			d.mu.Lock()
-			defer d.mu.Unlock()
-			for _, id := range ids {
-				_, _ = d.db.Exec(`UPDATE runtime_state SET status = 'stopped', pid = 0 WHERE model_id = ?`, id)
-			}
-		}(deadIDs)
+		d.mu.Lock()
+		for _, id := range deadIDs {
+			_, _ = d.db.ExecContext(ctx, `UPDATE runtime_state SET status = 'stopped', pid = 0 WHERE model_id = ?`, id)
+		}
+		d.mu.Unlock()
 	}
 
 	return list, nil
 }
 
-func (d *DB) sanitizeRuntimeState(ctx context.Context, rt *RuntimeState) {
+func (d *DB) sanitizeRuntimeState(_ context.Context, rt *RuntimeState) {
 	if rt == nil {
 		return
 	}
 	if (rt.Status == "running" || rt.Status == "starting") && !IsPIDAlive(rt.PID) {
 		rt.Status = "stopped"
 		rt.PID = 0
-		modelID := rt.ModelID
-		go func(id string) {
-			d.mu.Lock()
-			defer d.mu.Unlock()
-			_, _ = d.db.Exec(`UPDATE runtime_state SET status = 'stopped', pid = 0 WHERE model_id = ?`, id)
-		}(modelID)
+		// DB cleanup is deferred to ReconcileRuntimeStates or GetActiveRuntimeStates
+		// to avoid spawning uncoordinated goroutines from within a read lock.
 	}
 }
 

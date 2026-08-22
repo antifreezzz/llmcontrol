@@ -112,6 +112,14 @@ CREATE TABLE IF NOT EXISTS settings (
 3. Если процесс не завершился -> отправка `SIGKILL`.
 4. Очистка записи в `runtime_state` (статус `stopped`, `pid = 0`).
 
+### 3.3 Переподхват процессов при рестарте (ReattachRunning)
+- При запуске демона загружаются все записи `runtime_state` со статусом `running`/`starting`
+- Для каждой проверяется: жив ли PID (через `/proc/<pid>`)
+- Для живых: проверяется healthcheck `http://<host>:<port>/health`
+- Живые процессы сохраняют статус `running`, мёртвые сбрасываются в `stopped`
+- Запускается фоновый мониторинг (периодическая проверка `kill -0`) для переподхваченных процессов
+- Дочерние процессы запускаются с `SysProcAttr.Setsid=true`, что позволяет им пережить перезапуск родительского демона
+
 ---
 
 ## 4. REST API
@@ -129,7 +137,7 @@ CREATE TABLE IF NOT EXISTS settings (
 | `POST` | `/api/models/:id/bench` | Запуск немедленного замера производительности |
 | `GET` | `/api/models/:id/logs` | Последние N строк лога (query: `?lines=50`) |
 | `GET` | `/api/events` | Server-Sent Events (SSE) поток изменений статусов и логов |
-| `POST` | `/api/favorites/:id/toggle` | Переключение статуса «избранное» |
+| `POST` | `/api/models/:id/favorite` | Переключение статуса «избранное» |
 
 ---
 
