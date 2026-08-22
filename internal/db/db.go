@@ -352,6 +352,13 @@ func (d *DB) GetProfile(ctx context.Context, modelID, profileName string) (*Prof
 	return &p, nil
 }
 
+func (d *DB) DeleteProfile(ctx context.Context, modelID, profileName string) error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	_, err := d.db.ExecContext(ctx, "DELETE FROM profiles WHERE model_id = ? AND name = ?", modelID, profileName)
+	return err
+}
+
 // Runtime State
 func (d *DB) SetRuntimeState(ctx context.Context, r RuntimeState) error {
 	d.mu.Lock()

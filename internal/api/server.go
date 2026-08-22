@@ -61,7 +61,12 @@ func (s *Server) registerRoutes() {
 	// API routes
 	s.mux.HandleFunc("GET /api/status", s.handleStatus)
 	s.mux.HandleFunc("GET /api/models", s.handleListModels)
+	s.mux.HandleFunc("POST /api/models", s.handleCreateModel)
 	s.mux.HandleFunc("GET /api/models/{id}", s.handleGetModel)
+	s.mux.HandleFunc("PUT /api/models/{id}", s.handleUpdateModel)
+	s.mux.HandleFunc("DELETE /api/models/{id}", s.handleDeleteModel)
+	s.mux.HandleFunc("POST /api/models/{id}/profiles", s.handleSaveProfile)
+	s.mux.HandleFunc("DELETE /api/models/{id}/profiles/{name}", s.handleDeleteProfile)
 	s.mux.HandleFunc("POST /api/models/{id}/start", s.handleStartModel)
 	s.mux.HandleFunc("POST /api/models/{id}/stop", s.handleStopModel)
 	s.mux.HandleFunc("POST /api/models/{id}/bench", s.handleBenchModel)
@@ -118,6 +123,136 @@ func (s *Server) handleListModels(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(models)
+}
+
+func (s *Server) handleCreateModel(w http.ResponseWriter, r *http.Request) {
+	var m db.Model
+	if err := json.NewDecoder(r.Body).Decode(&m); err != nil {
+		http.Error(w, "invalid JSON: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+	if m.ID == "" || m.Name == "" || m.ModelPath == "" {
+		http.Error(w, "id, name and model_path are required", http.StatusBadRequest)
+		return
+	}
+	if m.EngineID == "" {
+		m.EngineID = "llama-vk"
+	}
+	if m.DefaultPort <= 0 {
+		m.DefaultPort = 8080
+	}
+
+	ctx := r.Context()
+	if err := s.db.SaveModel(ctx, m); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	for _, p := range m.Profiles {
+		p.ModelID = m.ID
+		if p.CtxSize <= 0 {
+			p.CtxSize = 4096
+		}
+		_ = s.db.SaveProfile(ctx, p)
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusCreated)
+	_ = json.NewEncoder(w).Encode(map[string]string{"status": "created", "model_id": m.ID})
+}
+
+func (s *Server) handleUpdateModel(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	ctx := r.Context()
+
+	existing, err := s.db.GetModel(ctx, id)
+	if err != nil || existing == nil {
+		http.NotFound(w, r)
+		return
+	}
+
+	var m db.Model
+	if err := json.NewDecoder(r.Body).Decode(&m); err != nil {
+		http.Error(w, "invalid JSON", http.StatusBadRequest)
+		return
+	}
+
+	m.ID = id
+	if m.Name == "" {
+		m.Name = existing.Name
+	}
+	if m.EngineID == "" {
+		m.EngineID = existing.EngineID
+	}
+	if m.ModelPath == "" {
+		m.ModelPath = existing.ModelPath
+	}
+	if m.DefaultPort <= 0 {
+		m.DefaultPort = existing.DefaultPort
+	}
+	if m.DefaultProfile == "" {
+		m.DefaultProfile = existing.DefaultProfile
+	}
+
+	if err := s.db.SaveModel(ctx, m); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]string{"status": "updated", "model_id": id})
+}
+
+func (s *Server) handleDeleteModel(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	ctx := r.Context()
+
+	_ = s.supervisor.StopModel(ctx, id)
+	if err := s.db.DeleteModel(ctx, id); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]string{"status": "deleted", "model_id": id})
+}
+
+func (s *Server) handleSaveProfile(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	var p db.Profile
+	if err := json.NewDecoder(r.Body).Decode(&p); err != nil {
+		http.Error(w, "invalid JSON", http.StatusBadRequest)
+		return
+	}
+	if p.Name == "" {
+		http.Error(w, "profile name is required", http.StatusBadRequest)
+		return
+	}
+	p.ModelID = id
+	if p.CtxSize <= 0 {
+		p.CtxSize = 4096
+	}
+
+	if err := s.db.SaveProfile(r.Context(), p); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]string{"status": "saved", "profile": p.Name})
+}
+
+func (s *Server) handleDeleteProfile(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	name := r.PathValue("name")
+
+	if err := s.db.DeleteProfile(r.Context(), id, name); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]string{"status": "deleted", "profile": name})
 }
 
 func (s *Server) handleGetModel(w http.ResponseWriter, r *http.Request) {

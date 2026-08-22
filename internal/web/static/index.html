@@ -89,6 +89,22 @@
       border: 1px solid #1e293b;
     }
     
+    .card-top-right {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+    .card-action-icon {
+      background: none;
+      border: none;
+      color: var(--text-muted);
+      cursor: pointer;
+      font-size: 14px;
+      padding: 2px 4px;
+      border-radius: 4px;
+    }
+    .card-action-icon:hover { color: #fff; background: #1e293b; }
+    
     .status-pill {
       padding: 3px 8px;
       border-radius: 6px;
@@ -137,17 +153,17 @@
     }
     .profile-select-wrapper { width: 100%; }
     
-    select {
+    select, input, textarea {
       width: 100%;
-      padding: 7px 10px;
+      padding: 8px 10px;
       border-radius: 6px;
       border: 1px solid var(--card-border);
       background: #0d1322;
       color: var(--text);
-      font-size: 12px;
+      font-size: 13px;
       outline: none;
-      cursor: pointer;
     }
+    select:focus, input:focus, textarea:focus { border-color: var(--primary); }
     select:disabled { opacity: 0.6; cursor: not-allowed; }
     
     .btn-group {
@@ -160,25 +176,26 @@
     }
     
     button {
-      padding: 7px 10px;
+      padding: 8px 12px;
       border-radius: 6px;
       border: 1px solid var(--card-border);
       background: #1e293b;
       color: var(--text);
-      font-size: 12px;
+      font-size: 13px;
       font-weight: 500;
       cursor: pointer;
       transition: all 0.15s;
       display: flex;
       align-items: center;
       justify-content: center;
-      gap: 4px;
+      gap: 5px;
       text-align: center;
       white-space: nowrap;
     }
     button:hover { background: #2b3a55; }
     button.btn-primary { background: var(--primary); border-color: var(--primary); color: #fff; font-weight: 600; }
     button.btn-primary:hover { background: var(--primary-hover); }
+    button.btn-success { background: var(--success); border-color: var(--success); color: #fff; font-weight: 600; }
     button.btn-danger { background: var(--danger); border-color: var(--danger); color: #fff; font-weight: 600; }
     button.btn-danger:hover { background: var(--danger-hover); }
     
@@ -203,6 +220,69 @@
       white-space: pre-wrap;
       border: 1px solid #1e293b;
     }
+
+    /* Modal */
+    .modal-backdrop {
+      display: none;
+      position: fixed;
+      inset: 0;
+      background: rgba(0, 0, 0, 0.75);
+      backdrop-filter: blur(4px);
+      z-index: 1000;
+      align-items: center;
+      justify-content: center;
+      padding: 20px;
+    }
+    .modal-backdrop.open { display: flex; }
+    .modal {
+      background: var(--card-bg);
+      border: 1px solid var(--card-border);
+      border-radius: 14px;
+      width: 100%;
+      max-width: 600px;
+      max-height: 90vh;
+      display: flex;
+      flex-direction: column;
+      box-shadow: 0 20px 40px rgba(0,0,0,0.5);
+    }
+    .modal-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 18px 22px;
+      border-bottom: 1px solid var(--card-border);
+    }
+    .modal-body {
+      padding: 22px;
+      overflow-y: auto;
+      display: flex;
+      flex-direction: column;
+      gap: 14px;
+    }
+    .modal-footer {
+      display: flex;
+      justify-content: flex-end;
+      gap: 10px;
+      padding: 16px 22px;
+      border-top: 1px solid var(--card-border);
+    }
+    .form-group {
+      display: flex;
+      flex-direction: column;
+      gap: 5px;
+    }
+    .form-group label {
+      font-size: 12px;
+      font-weight: 600;
+      color: var(--text-muted);
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+    }
+    .form-row {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 12px;
+    }
   </style>
 </head>
 <body>
@@ -214,6 +294,7 @@
     <div class="system-badges">
       <div class="badge">🧠 RAM: <span id="ram-badge" class="badge-val">--</span></div>
       <div class="badge">🎮 VRAM: <span id="vram-badge" class="badge-val">--</span></div>
+      <button class="btn-success" onclick="openAddModal()">➕ Add Model</button>
       <button class="btn-danger" onclick="stopAll()">⏹ Stop All</button>
       <button onclick="loadAll()">🔄 Refresh</button>
     </div>
@@ -231,8 +312,70 @@
     <pre id="logs">Выберите модель для просмотра логов...</pre>
   </div>
 
+  <!-- Modal for Add/Edit Model -->
+  <div class="modal-backdrop" id="model-modal">
+    <div class="modal">
+      <div class="modal-header">
+        <h2 id="modal-title" style="font-size: 18px;">Добавить модель</h2>
+        <button class="card-action-icon" onclick="closeModal()">✕</button>
+      </div>
+      <div class="modal-body">
+        <div class="form-row">
+          <div class="form-group">
+            <label>ID Модели (slug)</label>
+            <input type="text" id="m-id" placeholder="например: qwen14b" />
+          </div>
+          <div class="form-group">
+            <label>Название</label>
+            <input type="text" id="m-name" placeholder="например: Qwen 3.5 14B" />
+          </div>
+        </div>
+
+        <div class="form-row">
+          <div class="form-group">
+            <label>Движок</label>
+            <select id="m-engine">
+              <option value="llama-vk">Llama.cpp Vulkan (llama-vk)</option>
+              <option value="llama-sycl">Llama.cpp Intel SYCL (llama-sycl)</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label>Порт по умолчанию</label>
+            <input type="number" id="m-port" value="8080" />
+          </div>
+        </div>
+
+        <div class="form-group">
+          <label>Путь к модели (.gguf)</label>
+          <input type="text" id="m-path" placeholder="/home/.../model.gguf" />
+        </div>
+
+        <div class="form-group">
+          <label>Путь к mmproj (Vision, опц.)</label>
+          <input type="text" id="m-mmproj" placeholder="/home/.../mmproj.gguf" />
+        </div>
+
+        <div class="form-group">
+          <label>Путь к MTP спекулятору (опц.)</label>
+          <input type="text" id="m-mtp" placeholder="/home/.../assistant-mtp.gguf" />
+        </div>
+
+        <div class="form-group">
+          <label>Профиль по умолчанию</label>
+          <input type="text" id="m-def-profile" value="default" />
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button onclick="closeModal()">Отмена</button>
+        <button class="btn-primary" onclick="saveModelForm()">Сохранить</button>
+      </div>
+    </div>
+  </div>
+
   <script>
     let activeLogModel = "";
+    let isEditMode = false;
+    let allModels = [];
 
     async function loadAll() {
       try {
@@ -240,6 +383,7 @@
           fetch('/api/status').then(r => r.json()),
           fetch('/api/models').then(r => r.json())
         ]);
+        allModels = modelsRes;
 
         document.getElementById('ram-badge').innerText = `${statusRes.system.ram_used_mb} / ${statusRes.system.ram_total_mb} MB (${statusRes.system.ram_usage_pct.toFixed(0)}%)`;
         if (statusRes.system.vram_total_mb > 0) {
@@ -292,7 +436,11 @@
               <span class="card-id" title="${m.id}">${m.id}</span>
               <span class="card-engine">${m.engine_id}</span>
             </div>
-            <span class="status-pill ${statusClass}">${statusText}</span>
+            <div class="card-top-right">
+              <span class="status-pill ${statusClass}">${statusText}</span>
+              <button class="card-action-icon" onclick="openEditModal('${m.id}')" title="Редактировать">✏️</button>
+              <button class="card-action-icon" onclick="deleteModel('${m.id}')" title="Удалить">🗑</button>
+            </div>
           </div>
 
           <div class="card-name" title="${m.name}">${m.name}</div>
@@ -365,6 +513,97 @@
       if (!activeLogModel) return;
       const logs = await fetch(`/api/models/${activeLogModel}/logs?lines=60`).then(r => r.text());
       document.getElementById('logs').innerText = logs || "(нет записей)";
+    }
+
+    // Modal Add / Edit
+    function openAddModal() {
+      isEditMode = false;
+      document.getElementById('modal-title').innerText = 'Добавить модель';
+      document.getElementById('m-id').value = '';
+      document.getElementById('m-id').disabled = false;
+      document.getElementById('m-name').value = '';
+      document.getElementById('m-engine').value = 'llama-vk';
+      document.getElementById('m-port').value = 8080;
+      document.getElementById('m-path').value = '';
+      document.getElementById('m-mmproj').value = '';
+      document.getElementById('m-mtp').value = '';
+      document.getElementById('m-def-profile').value = 'default';
+      document.getElementById('model-modal').classList.add('open');
+    }
+
+    function openEditModal(id) {
+      const m = allModels.find(item => item.id === id);
+      if (!m) return;
+
+      isEditMode = true;
+      document.getElementById('modal-title').innerText = 'Редактировать модель';
+      document.getElementById('m-id').value = m.id;
+      document.getElementById('m-id').disabled = true;
+      document.getElementById('m-name').value = m.name;
+      document.getElementById('m-engine').value = m.engine_id;
+      document.getElementById('m-port').value = m.default_port;
+      document.getElementById('m-path').value = m.model_path;
+      document.getElementById('m-mmproj').value = m.mmproj_path || '';
+      document.getElementById('m-mtp').value = m.mtp_path || '';
+      document.getElementById('m-def-profile').value = m.default_profile || 'default';
+      document.getElementById('model-modal').classList.add('open');
+    }
+
+    function closeModal() {
+      document.getElementById('model-modal').classList.remove('open');
+    }
+
+    async function saveModelForm() {
+      const id = document.getElementById('m-id').value.trim();
+      const name = document.getElementById('m-name').value.trim();
+      const engine_id = document.getElementById('m-engine').value;
+      const default_port = parseInt(document.getElementById('m-port').value) || 8080;
+      const model_path = document.getElementById('m-path').value.trim();
+      const mmproj_path = document.getElementById('m-mmproj').value.trim();
+      const mtp_path = document.getElementById('m-mtp').value.trim();
+      const default_profile = document.getElementById('m-def-profile').value.trim() || 'default';
+
+      if (!id || !name || !model_path) {
+        alert('Заполните обязательные поля: ID, Название и Путь к модели');
+        return;
+      }
+
+      const payload = {
+        id,
+        name,
+        engine_id,
+        default_port,
+        model_path,
+        mmproj_path,
+        mtp_path,
+        default_profile
+      };
+
+      if (!isEditMode) {
+        payload.profiles = [
+          { name: 'default', ctx_size: 4096, kv_type: 'q8_0', flash_attn: 'auto', enable_ui: true }
+        ];
+        await fetch('/api/models', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload)
+        });
+      } else {
+        await fetch(`/api/models/${id}`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload)
+        });
+      }
+
+      closeModal();
+      loadAll();
+    }
+
+    async function deleteModel(id) {
+      if (!confirm(`Удалить модель ${id}?`)) return;
+      await fetch(`/api/models/${id}`, { method: 'DELETE' });
+      loadAll();
     }
 
     // SSE events for realtime updates
