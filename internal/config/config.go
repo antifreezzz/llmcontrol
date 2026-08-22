@@ -35,8 +35,12 @@ func LoadConfig(customPath string) (Config, error) {
 
 	configPath := customPath
 	if configPath == "" {
-		home, _ := os.UserHomeDir()
-		configPath = filepath.Join(home, ".llmcontrol", "config.json")
+		if _, err := os.Stat("config.json"); err == nil {
+			configPath = "config.json"
+		} else {
+			home, _ := os.UserHomeDir()
+			configPath = filepath.Join(home, ".llmcontrol", "config.json")
+		}
 	}
 
 	data, err := os.ReadFile(configPath)
@@ -50,6 +54,11 @@ func LoadConfig(customPath string) (Config, error) {
 
 	if err := json.Unmarshal(data, &cfg); err != nil {
 		return cfg, err
+	}
+
+	// Environment variable overrides
+	if envToken := os.Getenv("TELEGRAM_TOKEN"); envToken != "" {
+		cfg.TelegramToken = envToken
 	}
 
 	return cfg, nil
