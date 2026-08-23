@@ -8,6 +8,34 @@ import (
 	"github.com/antifreezzz/llmcontrol/internal/supervisor"
 )
 
+// escapeMarkdown neutralizes raw special characters that Telegram's Markdown
+// parser would otherwise interpret (or REJECT on) before editMessageText.
+// Notably '>' is treated as inline-code delimiters; a lone '>' in a description
+// like "(> нативного 128K)" makes the whole message invalid, so the picker
+// screen silently fails to update.
+func escapeMarkdown(s string) string {
+	if s == "" {
+		return s
+	}
+	r := strings.NewReplacer(
+		">", "\\>",
+		"_", "\\_",
+		"*", "\\*",
+		"[", "\\[",
+		"]", "\\]",
+		"(", "\\(",
+		")", "\\)",
+		"#", "\\#",
+		"+", "\\+",
+		"=", "\\=",
+		"|", "\\|",
+	)
+	out := r.Replace(s)
+	// Backtick can't be expressed in a double-quoted Go literal, so handle it
+	// separately to keep the whole string valid for Telegram Markdown.
+	return strings.ReplaceAll(out, "`", "\\`")
+}
+
 func (b *Bot) RenderMainMenu(ctx context.Context) (string, InlineKeyboardMarkup, error) {
 	models, err := b.db.ListModels(ctx)
 	if err != nil {
@@ -160,17 +188,18 @@ func (b *Bot) RenderModelCard(ctx context.Context, modelID string) (string, Inli
 }
 
 func (b *Bot) RenderProfilePicker(ctx context.Context, modelID string) (string, InlineKeyboardMarkup, error) {
-	m, err := b.db.GetModel(ctx, modelID)
-	if err != nil || m == nil {
+	m, _ := b.db.GetModel(ctx, modelID)
+	if m == nil {
 		return "❌ Модель не найдена", InlineKeyboardMarkup{}, nil
 	}
 
 	var sb strings.Builder
-	sb.WriteString(fmt.Sprintf("⚡ *Выберите профиль для запуска %s:*\n\n", m.Name))
+	sb.WriteString(fmt.Sprintf("⚡ *Выберите профиль для запуска %s:*\n\n", escapeMarkdown(m.Name)))
 	for _, p := range m.Profiles {
 		sb.WriteString(fmt.Sprintf("• *%s*: ctx %d", p.Name, p.CtxSize))
 		if p.Description != "" {
-			sb.WriteString(fmt.Sprintf(" — _%s_", p.Description))
+			// Escape raw '>' (e.g. "(> нативного 128K)") — Telegram Markdown treats it as inline-code delimiters and REJECTS the message. Without escaping the profile picker silently fails to render.
+			sb.WriteString(fmt.Sprintf(" — _%s_", escapeMarkdown(p.Description)))
 		}
 		sb.WriteString("\n")
 	}
