@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"net/http"
 	"strings"
 	"time"
@@ -91,12 +92,15 @@ func (b *Bot) SendMessage(chatID int64, text string, kb *InlineKeyboardMarkup) e
 	payload := map[string]interface{}{
 		"chat_id":    chatID,
 		"text":       text,
-		"parse_mode": "Markdown",
+		"parse_mode": "HTML",
 	}
 	if kb != nil {
 		payload["reply_markup"] = kb
 	}
 	_, err := b.apiCall("sendMessage", payload)
+	if err != nil {
+		log.Printf("[telegram] SendMessage error: %v", err)
+	}
 	return err
 }
 
@@ -105,7 +109,7 @@ func (b *Bot) EditMessage(chatID int64, messageID int, text string, kb *InlineKe
 		"chat_id":    chatID,
 		"message_id": messageID,
 		"text":       text,
-		"parse_mode": "Markdown",
+		"parse_mode": "HTML",
 	}
 	if kb != nil {
 		payload["reply_markup"] = kb
@@ -117,6 +121,7 @@ func (b *Bot) EditMessage(chatID int64, messageID int, text string, kb *InlineKe
 		if strings.Contains(err.Error(), "message is not modified") {
 			return nil
 		}
+		log.Printf("[telegram] EditMessage error: %v", err)
 		return err
 	}
 	return nil
