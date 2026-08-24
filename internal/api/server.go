@@ -126,29 +126,63 @@ func (s *Server) handleListModels(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleCreateModel(w http.ResponseWriter, r *http.Request) {
-	var m db.Model
-	if err := json.NewDecoder(r.Body).Decode(&m); err != nil {
+	var req struct {
+		ID             string       `json:"id"`
+		Name           string       `json:"name"`
+		EngineID       string       `json:"engine_id"`
+		ModelPath      string       `json:"model_path"`
+		MMProjPath     string       `json:"mmproj_path"`
+		MTPPath        string       `json:"mtp_path"`
+		DefaultPort    int          `json:"default_port"`
+		DefaultProfile string       `json:"default_profile"`
+		IsFavorite     *bool        `json:"is_favorite"`
+		Profiles       []db.Profile `json:"profiles"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, "invalid JSON: "+err.Error(), http.StatusBadRequest)
 		return
 	}
-	if m.ID == "" || m.Name == "" || m.ModelPath == "" {
+	if req.ID == "" || req.Name == "" || req.ModelPath == "" {
 		http.Error(w, "id, name and model_path are required", http.StatusBadRequest)
 		return
 	}
-	if m.EngineID == "" {
-		m.EngineID = "llama-vk"
+	if req.EngineID == "" {
+		req.EngineID = "llama-vk"
 	}
-	if m.DefaultPort <= 0 {
-		m.DefaultPort = 8080
+	if req.DefaultPort <= 0 {
+		req.DefaultPort = 8080
+	}
+	if req.DefaultProfile == "" {
+		req.DefaultProfile = "default"
 	}
 
 	ctx := r.Context()
+	existing, _ := s.db.GetModel(ctx, req.ID)
+	isFav := false
+	if req.IsFavorite != nil {
+		isFav = *req.IsFavorite
+	} else if existing != nil {
+		isFav = existing.IsFavorite
+	}
+
+	m := db.Model{
+		ID:             req.ID,
+		Name:           req.Name,
+		EngineID:       req.EngineID,
+		ModelPath:      req.ModelPath,
+		MMProjPath:     req.MMProjPath,
+		MTPPath:        req.MTPPath,
+		DefaultPort:    req.DefaultPort,
+		DefaultProfile: req.DefaultProfile,
+		IsFavorite:     isFav,
+	}
+
 	if err := s.db.SaveModel(ctx, m); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 
-	for _, p := range m.Profiles {
+	for _, p := range req.Profiles {
 		p.ModelID = m.ID
 		if p.CtxSize <= 0 {
 			p.CtxSize = 4096
@@ -171,13 +205,33 @@ func (s *Server) handleUpdateModel(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var m db.Model
-	if err := json.NewDecoder(r.Body).Decode(&m); err != nil {
+	var req struct {
+		Name           string       `json:"name"`
+		EngineID       string       `json:"engine_id"`
+		ModelPath      string       `json:"model_path"`
+		MMProjPath     string       `json:"mmproj_path"`
+		MTPPath        string       `json:"mtp_path"`
+		DefaultPort    int          `json:"default_port"`
+		DefaultProfile string       `json:"default_profile"`
+		IsFavorite     *bool        `json:"is_favorite"`
+		Profiles       []db.Profile `json:"profiles"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, "invalid JSON", http.StatusBadRequest)
 		return
 	}
 
-	m.ID = id
+	m := db.Model{
+		ID:             id,
+		Name:           req.Name,
+		EngineID:       req.EngineID,
+		ModelPath:      req.ModelPath,
+		MMProjPath:     req.MMProjPath,
+		MTPPath:        req.MTPPath,
+		DefaultPort:    req.DefaultPort,
+		DefaultProfile: req.DefaultProfile,
+	}
+
 	if m.Name == "" {
 		m.Name = existing.Name
 	}
@@ -193,14 +247,19 @@ func (s *Server) handleUpdateModel(w http.ResponseWriter, r *http.Request) {
 	if m.DefaultProfile == "" {
 		m.DefaultProfile = existing.DefaultProfile
 	}
+	if req.IsFavorite != nil {
+		m.IsFavorite = *req.IsFavorite
+	} else {
+		m.IsFavorite = existing.IsFavorite
+	}
 
 	if err := s.db.SaveModel(ctx, m); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 
-	if len(m.Profiles) > 0 {
-		for _, p := range m.Profiles {
+	if len(req.Profiles) > 0 {
+		for _, p := range req.Profiles {
 			p.ModelID = id
 			if p.CtxSize <= 0 {
 				p.CtxSize = 4096

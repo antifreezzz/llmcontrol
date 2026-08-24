@@ -1,5 +1,5 @@
 # Binaries
-llmctl
+/llmctl
 *.exe
 *.exe~
 *.dll

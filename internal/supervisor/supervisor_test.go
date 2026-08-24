@@ -89,6 +89,34 @@ func TestBuildArgs(t *testing.T) {
 	if !strings.Contains(argsStr, "-md /models/mtp.gguf") {
 		t.Errorf("missing -md mtp flag: %s", argsStr)
 	}
+
+	// Profile with DFlash2 override
+	dflashProf := &db.Profile{
+		ModelID:        "gemma4",
+		Name:           "dflash",
+		CtxSize:        4096,
+		SpecType:       "draft-dflash",
+		DraftModelPath: "/models/dflash.gguf",
+		DraftNMax:      8,
+		DraftNGL:       99,
+		UseMTP:         false,
+	}
+
+	dfArgs := sup.BuildArgs(model, dflashProf, 8088)
+	dfArgsStr := strings.Join(dfArgs, " ")
+
+	if !strings.Contains(dfArgsStr, "--spec-type draft-dflash") {
+		t.Errorf("missing --spec-type flag: %s", dfArgsStr)
+	}
+	if !strings.Contains(dfArgsStr, "-md /models/dflash.gguf") {
+		t.Errorf("missing -md override flag: %s", dfArgsStr)
+	}
+	if !strings.Contains(dfArgsStr, "--spec-draft-n-max 8") {
+		t.Errorf("missing --spec-draft-n-max flag: %s", dfArgsStr)
+	}
+	if !strings.Contains(dfArgsStr, "--spec-draft-ngl 99") {
+		t.Errorf("missing --spec-draft-ngl flag: %s", dfArgsStr)
+	}
 }
 
 func TestBenchmarkRunner(t *testing.T) {

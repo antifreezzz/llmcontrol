@@ -33,11 +33,15 @@ type Profile struct {
 	Parallel    int    `json:"parallel"`
 	KVType      string `json:"kv_type"`
 	FlashAttn   string `json:"flash_attn"`
-	UseMTP      bool   `json:"use_mtp"`
-	UseVision   bool   `json:"use_vision"`
-	EnableUI    bool   `json:"enable_ui"`
-	Tools       string `json:"tools"`
-	ExtraArgs   string `json:"extra_args,omitempty"`
+	UseMTP         bool   `json:"use_mtp"`
+	SpecType       string `json:"spec_type,omitempty"`
+	DraftModelPath string `json:"draft_model_path,omitempty"`
+	DraftNMax      int    `json:"draft_n_max,omitempty"`
+	DraftNGL       int    `json:"draft_ngl,omitempty"`
+	UseVision      bool   `json:"use_vision"`
+	EnableUI       bool   `json:"enable_ui"`
+	Tools          string `json:"tools"`
+	ExtraArgs      string `json:"extra_args,omitempty"`
 }
 
 type RuntimeState struct {
