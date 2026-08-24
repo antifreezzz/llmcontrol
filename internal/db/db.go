@@ -76,6 +76,10 @@ func (d *DB) initSchema(ctx context.Context) error {
 		kv_type TEXT DEFAULT 'q8_0',
 		flash_attn TEXT DEFAULT 'auto',
 		use_mtp BOOLEAN DEFAULT 1,
+		spec_type TEXT DEFAULT '',
+		draft_model TEXT DEFAULT '',
+		draft_n_max INTEGER DEFAULT 0,
+		draft_ngl INTEGER DEFAULT 0,
 		use_vision BOOLEAN DEFAULT 0,
 		enable_ui BOOLEAN DEFAULT 1,
 		tools TEXT DEFAULT 'safe',
@@ -111,8 +115,21 @@ func (d *DB) initSchema(ctx context.Context) error {
 		value TEXT NOT NULL
 	);
 	`
-	_, err := d.db.ExecContext(ctx, schema)
-	return err
+	if _, err := d.db.ExecContext(ctx, schema); err != nil {
+		return err
+	}
+
+	// Auto-migrations for existing tables
+	_, _ = d.db.ExecContext(ctx, "ALTER TABLE profiles ADD COLUMN spec_type TEXT DEFAULT ''")
+	_, _ = d.db.ExecContext(ctx, "ALTER TABLE profiles ADD COLUMN draft_model TEXT DEFAULT ''")
+	_, _ = d.db.ExecContext(ctx, "ALTER TABLE profiles ADD COLUMN draft_n_max INTEGER DEFAULT 0")
+	_, _ = d.db.ExecContext(ctx, "ALTER TABLE profiles ADD COLUMN draft_ngl INTEGER DEFAULT 0")
+	_, _ = d.db.ExecContext(ctx, "UPDATE profiles SET spec_type = '' WHERE spec_type IS NULL")
+	_, _ = d.db.ExecContext(ctx, "UPDATE profiles SET draft_model = '' WHERE draft_model IS NULL")
+	_, _ = d.db.ExecContext(ctx, "UPDATE profiles SET draft_n_max = 0 WHERE draft_n_max IS NULL")
+	_, _ = d.db.ExecContext(ctx, "UPDATE profiles SET draft_ngl = 0 WHERE draft_ngl IS NULL")
+
+	return nil
 }
 
 // Engines
@@ -204,7 +221,7 @@ func (d *DB) GetModel(ctx context.Context, id string) (*Model, error) {
 
 	// Profiles
 	pRows, err := d.db.QueryContext(ctx, `
-		SELECT id, model_id, name, description, ctx_size, parallel, kv_type, flash_attn, use_mtp, use_vision, enable_ui, tools, extra_args
+		SELECT id, model_id, name, description, ctx_size, parallel, kv_type, flash_attn, use_mtp, COALESCE(spec_type, ''), COALESCE(draft_model, ''), COALESCE(draft_n_max, 0), COALESCE(draft_ngl, 0), use_vision, enable_ui, tools, extra_args
 		FROM profiles WHERE model_id = ? ORDER BY id
 	`, id)
 	if err != nil {
@@ -214,7 +231,7 @@ func (d *DB) GetModel(ctx context.Context, id string) (*Model, error) {
 
 	for pRows.Next() {
 		var p Profile
-		if err := pRows.Scan(&p.ID, &p.ModelID, &p.Name, &p.Description, &p.CtxSize, &p.Parallel, &p.KVType, &p.FlashAttn, &p.UseMTP, &p.UseVision, &p.EnableUI, &p.Tools, &p.ExtraArgs); err != nil {
+		if err := pRows.Scan(&p.ID, &p.ModelID, &p.Name, &p.Description, &p.CtxSize, &p.Parallel, &p.KVType, &p.FlashAttn, &p.UseMTP, &p.SpecType, &p.DraftModelPath, &p.DraftNMax, &p.DraftNGL, &p.UseVision, &p.EnableUI, &p.Tools, &p.ExtraArgs); err != nil {
 			return nil, err
 		}
 		m.Profiles = append(m.Profiles, p)
@@ -256,13 +273,13 @@ func (d *DB) ListModels(ctx context.Context) ([]Model, error) {
 	for i := range list {
 		id := list[i].ID
 		pRows, err := d.db.QueryContext(ctx, `
-			SELECT id, model_id, name, description, ctx_size, parallel, kv_type, flash_attn, use_mtp, use_vision, enable_ui, tools, extra_args
+			SELECT id, model_id, name, description, ctx_size, parallel, kv_type, flash_attn, use_mtp, COALESCE(spec_type, ''), COALESCE(draft_model, ''), COALESCE(draft_n_max, 0), COALESCE(draft_ngl, 0), use_vision, enable_ui, tools, extra_args
 			FROM profiles WHERE model_id = ? ORDER BY id
 		`, id)
 		if err == nil {
 			for pRows.Next() {
 				var p Profile
-				if err := pRows.Scan(&p.ID, &p.ModelID, &p.Name, &p.Description, &p.CtxSize, &p.Parallel, &p.KVType, &p.FlashAttn, &p.UseMTP, &p.UseVision, &p.EnableUI, &p.Tools, &p.ExtraArgs); err == nil {
+				if err := pRows.Scan(&p.ID, &p.ModelID, &p.Name, &p.Description, &p.CtxSize, &p.Parallel, &p.KVType, &p.FlashAttn, &p.UseMTP, &p.SpecType, &p.DraftModelPath, &p.DraftNMax, &p.DraftNGL, &p.UseVision, &p.EnableUI, &p.Tools, &p.ExtraArgs); err == nil {
 					list[i].Profiles = append(list[i].Profiles, p)
 				}
 			}
@@ -322,8 +339,8 @@ func (d *DB) SaveProfile(ctx context.Context, p Profile) error {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	query := `
-	INSERT INTO profiles (model_id, name, description, ctx_size, parallel, kv_type, flash_attn, use_mtp, use_vision, enable_ui, tools, extra_args)
-	VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	INSERT INTO profiles (model_id, name, description, ctx_size, parallel, kv_type, flash_attn, use_mtp, spec_type, draft_model, draft_n_max, draft_ngl, use_vision, enable_ui, tools, extra_args)
+	VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	ON CONFLICT(model_id, name) DO UPDATE SET
 		description=excluded.description,
 		ctx_size=excluded.ctx_size,
@@ -331,12 +348,16 @@ func (d *DB) SaveProfile(ctx context.Context, p Profile) error {
 		kv_type=excluded.kv_type,
 		flash_attn=excluded.flash_attn,
 		use_mtp=excluded.use_mtp,
+		spec_type=excluded.spec_type,
+		draft_model=excluded.draft_model,
+		draft_n_max=excluded.draft_n_max,
+		draft_ngl=excluded.draft_ngl,
 		use_vision=excluded.use_vision,
 		enable_ui=excluded.enable_ui,
 		tools=excluded.tools,
 		extra_args=excluded.extra_args;
 	`
-	_, err := d.db.ExecContext(ctx, query, p.ModelID, p.Name, p.Description, p.CtxSize, p.Parallel, p.KVType, p.FlashAttn, p.UseMTP, p.UseVision, p.EnableUI, p.Tools, p.ExtraArgs)
+	_, err := d.db.ExecContext(ctx, query, p.ModelID, p.Name, p.Description, p.CtxSize, p.Parallel, p.KVType, p.FlashAttn, p.UseMTP, p.SpecType, p.DraftModelPath, p.DraftNMax, p.DraftNGL, p.UseVision, p.EnableUI, p.Tools, p.ExtraArgs)
 	return err
 }
 
@@ -344,11 +365,11 @@ func (d *DB) GetProfile(ctx context.Context, modelID, profileName string) (*Prof
 	d.mu.RLock()
 	defer d.mu.RUnlock()
 	row := d.db.QueryRowContext(ctx, `
-		SELECT id, model_id, name, description, ctx_size, parallel, kv_type, flash_attn, use_mtp, use_vision, enable_ui, tools, extra_args
+		SELECT id, model_id, name, description, ctx_size, parallel, kv_type, flash_attn, use_mtp, COALESCE(spec_type, ''), COALESCE(draft_model, ''), COALESCE(draft_n_max, 0), COALESCE(draft_ngl, 0), use_vision, enable_ui, tools, extra_args
 		FROM profiles WHERE model_id = ? AND name = ?
 	`, modelID, profileName)
 	var p Profile
-	if err := row.Scan(&p.ID, &p.ModelID, &p.Name, &p.Description, &p.CtxSize, &p.Parallel, &p.KVType, &p.FlashAttn, &p.UseMTP, &p.UseVision, &p.EnableUI, &p.Tools, &p.ExtraArgs); err != nil {
+	if err := row.Scan(&p.ID, &p.ModelID, &p.Name, &p.Description, &p.CtxSize, &p.Parallel, &p.KVType, &p.FlashAttn, &p.UseMTP, &p.SpecType, &p.DraftModelPath, &p.DraftNMax, &p.DraftNGL, &p.UseVision, &p.EnableUI, &p.Tools, &p.ExtraArgs); err != nil {
 		if err == sql.ErrNoRows {
 			return nil, nil
 		}

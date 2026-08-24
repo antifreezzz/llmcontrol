@@ -517,21 +517,52 @@
               </div>
             </div>
 
-            <div class="form-row" style="margin-top: 4px;">
-              <label class="checkbox-group">
+            <div style="border: 1px solid var(--border); border-radius: 6px; padding: 8px 10px; margin-top: 6px; margin-bottom: 8px; background: rgba(255, 255, 255, 0.02);">
+              <div style="font-weight: 600; font-size: 12px; margin-bottom: 6px; color: var(--accent);">⚡ Спекулятивное декодирование (Speculative Decoding)</div>
+              <div class="form-row">
+                <div class="form-group" style="flex: 1.2;">
+                  <label>Метод (--spec-type)</label>
+                  <select id="p-spec-type" onchange="syncCurrentProfile()">
+                    <option value="">По умолчанию (Auto / MTP)</option>
+                    <option value="draft-dflash">draft-dflash (DFlash / DFlash 2)</option>
+                    <option value="draft-mtp">draft-mtp (MTP Multi-Token)</option>
+                    <option value="draft-simple">draft-simple (Draft-модель)</option>
+                    <option value="draft-eagle3">draft-eagle3 (EAGLE-3)</option>
+                    <option value="draft-dspark">draft-dspark (D-Spark)</option>
+                    <option value="ngram-simple">ngram-simple (N-Gram lookup)</option>
+                    <option value="none">none (Отключить)</option>
+                  </select>
+                </div>
+                <div class="form-group" style="flex: 0.8;">
+                  <label>Max Tokens (--spec-draft-n-max)</label>
+                  <input type="number" id="p-draft-n-max" onchange="syncCurrentProfile()" placeholder="8" min="0" max="64" />
+                </div>
+                <div class="form-group" style="flex: 0.8;">
+                  <label>GPU Layers (--spec-draft-ngl)</label>
+                  <input type="number" id="p-draft-ngl" onchange="syncCurrentProfile()" placeholder="99" min="0" max="999" />
+                </div>
+              </div>
+              <div class="form-group" style="margin-top: 4px;">
+                <label>Draft Model Override (путь к .gguf драфта/DFlash, если отличается от MTP модели)</label>
+                <input type="text" id="p-draft-model" onchange="syncCurrentProfile()" placeholder="/mnt/storage/ai-models/dflash/...-DFlash2-Q4_K_M.gguf" />
+              </div>
+              <label class="checkbox-group" style="margin-top: 4px;">
                 <input type="checkbox" id="p-mtp" onchange="syncCurrentProfile()" />
-                <span>Использовать MTP спекулятор (-md)</span>
+                <span>Использовать MTP спекулятор модели по умолчанию (-md)</span>
               </label>
+            </div>
+
+            <div class="form-row">
               <label class="checkbox-group">
                 <input type="checkbox" id="p-vision" onchange="syncCurrentProfile()" />
                 <span>Включить Vision (--mmproj)</span>
               </label>
-            </div>
-            <div class="form-row">
               <label class="checkbox-group">
                 <input type="checkbox" id="p-ui" onchange="syncCurrentProfile()" checked />
                 <span>Включить WebUI встроенный в llama-server</span>
               </label>
+            </div>
+            <div class="form-row">
               <div class="form-group">
                 <label>Tools mode</label>
                 <select id="p-tools" onchange="syncCurrentProfile()">
@@ -805,6 +836,10 @@
         document.getElementById('p-kv').value = cur.kv_type || 'q8_0';
         document.getElementById('p-fa').value = cur.flash_attn || 'auto';
         document.getElementById('p-np').value = cur.parallel || 1;
+        document.getElementById('p-spec-type').value = cur.spec_type || '';
+        document.getElementById('p-draft-model').value = cur.draft_model_path || '';
+        document.getElementById('p-draft-n-max').value = cur.draft_n_max || '';
+        document.getElementById('p-draft-ngl').value = cur.draft_ngl || '';
         document.getElementById('p-mtp').checked = cur.use_mtp !== false;
         document.getElementById('p-vision').checked = !!cur.use_vision;
         document.getElementById('p-ui').checked = cur.enable_ui !== false;
@@ -823,6 +858,10 @@
       cur.kv_type = document.getElementById('p-kv').value;
       cur.flash_attn = document.getElementById('p-fa').value;
       cur.parallel = parseInt(document.getElementById('p-np').value) || 1;
+      cur.spec_type = document.getElementById('p-spec-type').value;
+      cur.draft_model_path = document.getElementById('p-draft-model').value.trim();
+      cur.draft_n_max = parseInt(document.getElementById('p-draft-n-max').value) || 0;
+      cur.draft_ngl = parseInt(document.getElementById('p-draft-ngl').value) || 0;
       cur.use_mtp = document.getElementById('p-mtp').checked;
       cur.use_vision = document.getElementById('p-vision').checked;
       cur.enable_ui = document.getElementById('p-ui').checked;
@@ -844,6 +883,10 @@
         kv_type: 'q8_0',
         flash_attn: 'auto',
         parallel: 1,
+        spec_type: '',
+        draft_model_path: '',
+        draft_n_max: 0,
+        draft_ngl: 0,
         use_mtp: true,
         use_vision: false,
         enable_ui: true,
@@ -906,6 +949,14 @@
         return;
       }
 
+      let isFav = false;
+      if (isEditMode) {
+        const existing = allModels.find(item => item.id === id);
+        if (existing) {
+          isFav = !!existing.is_favorite;
+        }
+      }
+
       const payload = {
         id,
         name,
@@ -915,6 +966,7 @@
         mmproj_path,
         mtp_path,
         default_profile,
+        is_favorite: isFav,
         profiles: editingProfiles
       };
 

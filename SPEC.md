@@ -43,6 +43,10 @@ CREATE TABLE IF NOT EXISTS profiles (
     kv_type TEXT DEFAULT 'q8_0',       -- 'q8_0', 'q4_0', 'f16'
     flash_attn TEXT DEFAULT 'auto',    -- 'auto', 'on', 'off'
     use_mtp BOOLEAN DEFAULT 1,
+    spec_type TEXT DEFAULT '',         -- 'draft-dflash', 'draft-mtp', 'draft-simple', 'draft-eagle3', 'none'
+    draft_model TEXT DEFAULT '',       -- переопределение пути к GGUF драфт/DFlash модели
+    draft_n_max INTEGER DEFAULT 0,     -- --spec-draft-n-max
+    draft_ngl INTEGER DEFAULT 0,       -- --spec-draft-ngl
     use_vision BOOLEAN DEFAULT 0,
     enable_ui BOOLEAN DEFAULT 1,
     tools TEXT DEFAULT 'safe',         -- 'safe', 'all', ''

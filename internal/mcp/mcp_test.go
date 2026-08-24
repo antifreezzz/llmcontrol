@@ -102,6 +102,16 @@ func TestMCPExecuteTool(t *testing.T) {
 		t.Fatalf("failed to call llm_set_favorite: %v", err)
 	}
 
+	// Call llm_save_model again on existing favorite model without is_favorite field
+	saveResp2, err := srv.CallTool(ctx, "llm_save_model", json.RawMessage(`{"id":"test-model","name":"Test Model Updated","model_path":"/path/to/test.gguf"}`))
+	if err != nil || saveResp2.IsError {
+		t.Fatalf("failed to call llm_save_model on update: %v", err)
+	}
+	mAfterSave, _ := database.GetModel(ctx, "test-model")
+	if !mAfterSave.IsFavorite {
+		t.Errorf("expected test-model to remain favorite after save_model update")
+	}
+
 	// Call llm_delete_profile
 	delProfResp, err := srv.CallTool(ctx, "llm_delete_profile", json.RawMessage(`{"model_id":"test-model","profile_name":"test-prof"}`))
 	if err != nil || delProfResp.IsError {

@@ -102,8 +102,26 @@ func (s *Supervisor) BuildArgs(m *db.Model, p *db.Profile, port int) []string {
 	if p.FlashAttn != "" {
 		args = append(args, "--flash-attn", p.FlashAttn)
 	}
-	if p.UseMTP && m.MTPPath != "" {
-		args = append(args, "-md", m.MTPPath)
+	// Speculative decoding / draft model resolution
+	draftModel := ""
+	if p.DraftModelPath != "" {
+		draftModel = p.DraftModelPath
+	} else if p.UseMTP && m.MTPPath != "" {
+		draftModel = m.MTPPath
+	}
+
+	if p.SpecType != "" && p.SpecType != "none" {
+		args = append(args, "--spec-type", p.SpecType)
+	}
+
+	if draftModel != "" && p.SpecType != "none" {
+		args = append(args, "-md", draftModel)
+		if p.DraftNMax > 0 {
+			args = append(args, "--spec-draft-n-max", strconv.Itoa(p.DraftNMax))
+		}
+		if p.DraftNGL > 0 {
+			args = append(args, "--spec-draft-ngl", strconv.Itoa(p.DraftNGL))
+		}
 	}
 	if p.UseVision && m.MMProjPath != "" {
 		args = append(args, "--mmproj", m.MMProjPath)
@@ -525,12 +543,14 @@ func (s *Supervisor) ReattachRunning(ctx context.Context) {
 }
 
 // startOrphanMonitor watches a re-adopted process (we don't have its exec.Cmd)
-// by periodically checking if the PID is still alive. When it dies, updates
-// runtime_state to stopped.
+// by periodically checking if the PID is still alive and whether a starting model is now healthy.
 func (s *Supervisor) startOrphanMonitor(modelID string, pid, port int, profileName string) {
 	go func() {
+		client := &http.Client{Timeout: 2 * time.Second}
+		healthURL := fmt.Sprintf("http://%s:%d/health", s.host, port)
+
 		for {
-			time.Sleep(5 * time.Second)
+			time.Sleep(2 * time.Second)
 			if !db.IsPIDAlive(pid) {
 				s.mu.Lock()
 				delete(s.runningCmds, modelID)
@@ -544,6 +564,31 @@ func (s *Supervisor) startOrphanMonitor(modelID string, pid, port int, profileNa
 				s.mu.Unlock()
 				s.broadcastEvent(fmt.Sprintf("model:%s:stopped", modelID))
 				return
+			}
+
+			// If model is in 'starting' state, poll /health to transition to 'running'
+			m, err := s.db.GetModel(context.Background(), modelID)
+			if err == nil && m != nil && m.Runtime != nil && m.Runtime.Status == "starting" {
+				resp, err := client.Get(healthURL)
+				if err == nil && resp.StatusCode == 200 {
+					resp.Body.Close()
+					now := time.Now()
+					_ = s.db.SetRuntimeState(context.Background(), db.RuntimeState{
+						ModelID:     modelID,
+						PID:         pid,
+						Port:        port,
+						ProfileName: profileName,
+						Status:      "running",
+						StartedAt:   &now,
+					})
+					s.broadcastEvent(fmt.Sprintf("model:%s:running", modelID))
+					go func() {
+						baseURL := fmt.Sprintf("http://%s:%d", s.host, port)
+						_, _ = s.runBenchmarkOnURL(context.Background(), modelID, profileName, baseURL)
+					}()
+				} else if resp != nil {
+					resp.Body.Close()
+				}
 			}
 		}
 	}()

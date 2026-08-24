@@ -115,12 +115,30 @@ func TestModelsAndProfilesCRUD(t *testing.T) {
 		EnableUI:    true,
 		Tools:       "safe",
 	}
+	p3 := Profile{
+		ModelID:        "gemma4",
+		Name:           "dflash2",
+		Description:    "DFlash2 speculative profile",
+		CtxSize:        4096,
+		KVType:         "q8_0",
+		FlashAttn:      "on",
+		SpecType:       "draft-dflash",
+		DraftModelPath: "/models/dflash2.gguf",
+		DraftNMax:      8,
+		DraftNGL:       99,
+		UseMTP:         false,
+		EnableUI:       true,
+		Tools:          "safe",
+	}
 
 	if err := d.SaveProfile(ctx, p1); err != nil {
 		t.Fatalf("failed to save profile 1: %v", err)
 	}
 	if err := d.SaveProfile(ctx, p2); err != nil {
 		t.Fatalf("failed to save profile 2: %v", err)
+	}
+	if err := d.SaveProfile(ctx, p3); err != nil {
+		t.Fatalf("failed to save profile 3: %v", err)
 	}
 
 	// Get Model with profiles
@@ -131,8 +149,15 @@ func TestModelsAndProfilesCRUD(t *testing.T) {
 	if gotModel.Name != "Gemma 4 26B" {
 		t.Errorf("model name mismatch: %s", gotModel.Name)
 	}
-	if len(gotModel.Profiles) != 2 {
-		t.Fatalf("expected 2 profiles, got %d", len(gotModel.Profiles))
+	if len(gotModel.Profiles) != 3 {
+		t.Fatalf("expected 3 profiles, got %d", len(gotModel.Profiles))
+	}
+	gotP3, err := d.GetProfile(ctx, "gemma4", "dflash2")
+	if err != nil || gotP3 == nil {
+		t.Fatalf("failed to get p3 profile: %v", err)
+	}
+	if gotP3.SpecType != "draft-dflash" || gotP3.DraftModelPath != "/models/dflash2.gguf" || gotP3.DraftNMax != 8 || gotP3.DraftNGL != 99 {
+		t.Errorf("unexpected p3 spec fields: %+v", gotP3)
 	}
 
 	// Test Favorite Toggle

@@ -3,6 +3,7 @@ package telegram
 import (
 	"context"
 	"fmt"
+	"html"
 	"strings"
 
 	"github.com/antifreezzz/llmcontrol/internal/supervisor"
@@ -23,17 +24,17 @@ func (b *Bot) RenderMainMenu(ctx context.Context) (string, InlineKeyboardMarkup,
 	}
 
 	var sb strings.Builder
-	sb.WriteString("🖥 *LLM Control Center*\n\n")
-	sb.WriteString(fmt.Sprintf("📊 *RAM:* %d / %d MB (%.0f%%)", sysStat.RAMUsedMB, sysStat.RAMTotalMB, sysStat.RAMUsagePct))
+	sb.WriteString("🖥 <b>LLM Control Center</b>\n\n")
+	sb.WriteString(fmt.Sprintf("📊 <b>RAM:</b> %d / %d MB (%.0f%%)", sysStat.RAMUsedMB, sysStat.RAMTotalMB, sysStat.RAMUsagePct))
 	if sysStat.VRAMTotalMB > 0 {
-		sb.WriteString(fmt.Sprintf(" | *VRAM:* %d / %d MB", sysStat.VRAMUsedMB, sysStat.VRAMTotalMB))
+		sb.WriteString(fmt.Sprintf(" | <b>VRAM:</b> %d / %d MB", sysStat.VRAMUsedMB, sysStat.VRAMTotalMB))
 	}
 	sb.WriteString("\n")
 
 	if activeCount > 0 {
-		sb.WriteString(fmt.Sprintf("🟢 *Активно моделей:* %d\n", activeCount))
+		sb.WriteString(fmt.Sprintf("🟢 <b>Активно моделей:</b> %d\n", activeCount))
 	} else {
-		sb.WriteString("⚪ *Все модели остановлены (IDLE)*\n")
+		sb.WriteString("⚪ <b>Все модели остановлены (IDLE)</b>\n")
 	}
 	sb.WriteString("\nВыберите модель для управления или воспользуйтесь быстрым действием:")
 
@@ -121,16 +122,16 @@ func (b *Bot) RenderModelCard(ctx context.Context, modelID string) (string, Inli
 	}
 
 	var sb strings.Builder
-	sb.WriteString(fmt.Sprintf("🤖 *%s* (`%s`)\n\n", m.Name, m.ID))
-	sb.WriteString(fmt.Sprintf("• *Статус:* %s\n", statusIcon))
-	sb.WriteString(fmt.Sprintf("• *Порт:* `%d` | *PID:* `%s`\n", m.DefaultPort, pidStr))
-	sb.WriteString(fmt.Sprintf("• *Активный профиль:* `%s`\n", activeProf))
-	sb.WriteString(fmt.Sprintf("• *Скорость (тест):* %s\n", tpsStr))
+	sb.WriteString(fmt.Sprintf("🤖 <b>%s</b> (<code>%s</code>)\n\n", html.EscapeString(m.Name), html.EscapeString(m.ID)))
+	sb.WriteString(fmt.Sprintf("• <b>Статус:</b> %s\n", statusIcon))
+	sb.WriteString(fmt.Sprintf("• <b>Порт:</b> <code>%d</code> | <b>PID:</b> <code>%s</code>\n", m.DefaultPort, pidStr))
+	sb.WriteString(fmt.Sprintf("• <b>Активный профиль:</b> <code>%s</code>\n", html.EscapeString(activeProf)))
+	sb.WriteString(fmt.Sprintf("• <b>Скорость (тест):</b> %s\n", html.EscapeString(tpsStr)))
 	if m.MTPPath != "" {
-		sb.WriteString("• *MTP спекулятор:* включен\n")
+		sb.WriteString("• <b>MTP спекулятор:</b> включен\n")
 	}
 	if m.MMProjPath != "" {
-		sb.WriteString("• *Vision (mmproj):* поддерживается\n")
+		sb.WriteString("• <b>Vision (mmproj):</b> поддерживается\n")
 	}
 
 	var rows [][]InlineKeyboardButton
@@ -166,11 +167,11 @@ func (b *Bot) RenderProfilePicker(ctx context.Context, modelID string) (string, 
 	}
 
 	var sb strings.Builder
-	sb.WriteString(fmt.Sprintf("⚡ *Выберите профиль для запуска %s:*\n\n", m.Name))
+	sb.WriteString(fmt.Sprintf("⚡ <b>Выберите профиль для запуска %s:</b>\n\n", html.EscapeString(m.Name)))
 	for _, p := range m.Profiles {
-		sb.WriteString(fmt.Sprintf("• *%s*: ctx %d", p.Name, p.CtxSize))
+		sb.WriteString(fmt.Sprintf("• <b>%s</b>: ctx %d", html.EscapeString(p.Name), p.CtxSize))
 		if p.Description != "" {
-			sb.WriteString(fmt.Sprintf(" — _%s_", p.Description))
+			sb.WriteString(fmt.Sprintf(" — <i>%s</i>", html.EscapeString(p.Description)))
 		}
 		sb.WriteString("\n")
 	}
@@ -204,7 +205,7 @@ func (b *Bot) RenderLogs(ctx context.Context, modelID string) (string, InlineKey
 		logs = "(лог-файл пока пуст)"
 	}
 
-	text := fmt.Sprintf("📜 *Логи модели %s (последние строки):*\n\n```\n%s\n```", modelID, logs)
+	text := fmt.Sprintf("📜 <b>Логи модели %s (последние строки):</b>\n\n<pre>%s</pre>", html.EscapeString(modelID), html.EscapeString(logs))
 	kb := InlineKeyboardMarkup{
 		InlineKeyboard: [][]InlineKeyboardButton{
 			{
@@ -219,18 +220,18 @@ func (b *Bot) RenderLogs(ctx context.Context, modelID string) (string, InlineKey
 func (b *Bot) RenderSystemStats() (string, InlineKeyboardMarkup) {
 	sysStat := supervisor.GetSystemStatus()
 	var sb strings.Builder
-	sb.WriteString("📊 *Информация о системе*\n\n")
-	sb.WriteString(fmt.Sprintf("🧠 *RAM всего:* %d MB\n", sysStat.RAMTotalMB))
-	sb.WriteString(fmt.Sprintf("🧠 *RAM занято:* %d MB (%.1f%%)\n", sysStat.RAMUsedMB, sysStat.RAMUsagePct))
-	sb.WriteString(fmt.Sprintf("🧠 *RAM свободно:* %d MB\n\n", sysStat.RAMFreeMB))
+	sb.WriteString("📊 <b>Информация о системе</b>\n\n")
+	sb.WriteString(fmt.Sprintf("🧠 <b>RAM всего:</b> %d MB\n", sysStat.RAMTotalMB))
+	sb.WriteString(fmt.Sprintf("🧠 <b>RAM занято:</b> %d MB (%.1f%%)\n", sysStat.RAMUsedMB, sysStat.RAMUsagePct))
+	sb.WriteString(fmt.Sprintf("🧠 <b>RAM свободно:</b> %d MB\n\n", sysStat.RAMFreeMB))
 
 	if sysStat.VRAMTotalMB > 0 {
-		sb.WriteString(fmt.Sprintf("🎮 *Графика:* %s\n", sysStat.GPUName))
-		sb.WriteString(fmt.Sprintf("🎮 *VRAM всего:* %d MB\n", sysStat.VRAMTotalMB))
-		sb.WriteString(fmt.Sprintf("🎮 *VRAM занято:* %d MB (%.1f%%)\n", sysStat.VRAMUsedMB, sysStat.VRAMUsagePct))
-		sb.WriteString(fmt.Sprintf("🎮 *VRAM свободно:* %d MB\n", sysStat.VRAMFreeMB))
+		sb.WriteString(fmt.Sprintf("🎮 <b>Графика:</b> %s\n", html.EscapeString(sysStat.GPUName)))
+		sb.WriteString(fmt.Sprintf("🎮 <b>VRAM всего:</b> %d MB\n", sysStat.VRAMTotalMB))
+		sb.WriteString(fmt.Sprintf("🎮 <b>VRAM занято:</b> %d MB (%.1f%%)\n", sysStat.VRAMUsedMB, sysStat.VRAMUsagePct))
+		sb.WriteString(fmt.Sprintf("🎮 <b>VRAM свободно:</b> %d MB\n", sysStat.VRAMFreeMB))
 	} else {
-		sb.WriteString("🎮 *Графика:* VRAM не обнаружена (используется системная RAM / Vulkan)\n")
+		sb.WriteString("🎮 <b>Графика:</b> VRAM не обнаружена (используется системная RAM / Vulkan)\n")
 	}
 
 	kb := InlineKeyboardMarkup{

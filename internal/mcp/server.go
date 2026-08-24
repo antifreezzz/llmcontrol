@@ -189,12 +189,16 @@ func (s *Server) ListTools() []Tool {
 					"ctx_size":    map[string]interface{}{"type": "integer", "description": "Context size in tokens"},
 					"parallel":    map[string]interface{}{"type": "integer", "description": "Number of parallel slots (default 1)"},
 					"kv_type":     map[string]interface{}{"type": "string", "description": "KV cache quantization: 'q8_0', 'q4_0', 'f16'"},
-					"flash_attn":  map[string]interface{}{"type": "string", "description": "Flash attention: 'on', 'off', 'auto'"},
-					"use_mtp":     map[string]interface{}{"type": "boolean", "description": "Enable MTP speculative decoding if available"},
-					"use_vision":  map[string]interface{}{"type": "boolean", "description": "Enable Vision mmproj projector"},
-					"enable_ui":   map[string]interface{}{"type": "boolean", "description": "Enable llama-server WebUI"},
-					"tools":       map[string]interface{}{"type": "string", "description": "Tools mode: 'safe', 'all', or empty"},
-					"extra_args":  map[string]interface{}{"type": "string", "description": "Extra CLI flags to pass to llama-server"},
+					"flash_attn":        map[string]interface{}{"type": "string", "description": "Flash attention: 'on', 'off', 'auto'"},
+					"use_mtp":           map[string]interface{}{"type": "boolean", "description": "Enable MTP speculative decoding if available"},
+					"spec_type":         map[string]interface{}{"type": "string", "description": "Speculative decoding type: 'draft-dflash', 'draft-mtp', 'draft-simple', 'draft-eagle3', 'draft-dspark', 'none'"},
+					"draft_model_path":  map[string]interface{}{"type": "string", "description": "Override path to draft/DFlash/MTP GGUF for this profile"},
+					"draft_n_max":       map[string]interface{}{"type": "integer", "description": "Speculative draft max tokens (--spec-draft-n-max)"},
+					"draft_ngl":         map[string]interface{}{"type": "integer", "description": "Speculative draft GPU layers offload (--spec-draft-ngl)"},
+					"use_vision":        map[string]interface{}{"type": "boolean", "description": "Enable Vision mmproj projector"},
+					"enable_ui":         map[string]interface{}{"type": "boolean", "description": "Enable llama-server WebUI"},
+					"tools":             map[string]interface{}{"type": "string", "description": "Tools mode: 'safe', 'all', or empty"},
+					"extra_args":        map[string]interface{}{"type": "string", "description": "Extra CLI flags to pass to llama-server"},
 				},
 				"required": []string{"model_id", "name", "ctx_size"},
 			},
@@ -304,24 +308,83 @@ func (s *Server) CallTool(ctx context.Context, name string, argsRaw json.RawMess
 		return &ToolResult{Content: []ToolContent{{Type: "text", Text: logs}}}, nil
 
 	case "llm_save_model":
-		var m db.Model
-		if err := json.Unmarshal(argsRaw, &m); err != nil {
+		var req struct {
+			ID             string       `json:"id"`
+			Name           string       `json:"name"`
+			EngineID       string       `json:"engine_id"`
+			ModelPath      string       `json:"model_path"`
+			MMProjPath     string       `json:"mmproj_path"`
+			MTPPath        string       `json:"mtp_path"`
+			DefaultPort    int          `json:"default_port"`
+			DefaultProfile string       `json:"default_profile"`
+			IsFavorite     *bool        `json:"is_favorite"`
+			Profiles       []db.Profile `json:"profiles"`
+		}
+		if err := json.Unmarshal(argsRaw, &req); err != nil {
 			return &ToolResult{IsError: true, Content: []ToolContent{{Type: "text", Text: "invalid arguments: " + err.Error()}}}, nil
 		}
-		if m.ID == "" || m.Name == "" || m.ModelPath == "" {
+		existing, _ := s.db.GetModel(ctx, req.ID)
+		if req.Name == "" && existing != nil {
+			req.Name = existing.Name
+		}
+		if req.ModelPath == "" && existing != nil {
+			req.ModelPath = existing.ModelPath
+		}
+		if req.ID == "" || req.Name == "" || req.ModelPath == "" {
 			return &ToolResult{IsError: true, Content: []ToolContent{{Type: "text", Text: "id, name, and model_path are required"}}}, nil
 		}
-		if m.EngineID == "" {
-			m.EngineID = "llama-vk"
+		if req.EngineID == "" {
+			if existing != nil && existing.EngineID != "" {
+				req.EngineID = existing.EngineID
+			} else {
+				req.EngineID = "llama-vk"
+			}
 		}
-		if m.DefaultPort <= 0 {
-			m.DefaultPort = 8080
+		if req.DefaultPort <= 0 {
+			if existing != nil && existing.DefaultPort > 0 {
+				req.DefaultPort = existing.DefaultPort
+			} else {
+				req.DefaultPort = 8080
+			}
 		}
-		if m.DefaultProfile == "" {
-			m.DefaultProfile = "default"
+		if req.DefaultProfile == "" {
+			if existing != nil && existing.DefaultProfile != "" {
+				req.DefaultProfile = existing.DefaultProfile
+			} else {
+				req.DefaultProfile = "default"
+			}
 		}
+
+		isFav := false
+		if req.IsFavorite != nil {
+			isFav = *req.IsFavorite
+		} else if existing != nil {
+			isFav = existing.IsFavorite
+		}
+
+		m := db.Model{
+			ID:             req.ID,
+			Name:           req.Name,
+			EngineID:       req.EngineID,
+			ModelPath:      req.ModelPath,
+			MMProjPath:     req.MMProjPath,
+			MTPPath:        req.MTPPath,
+			DefaultPort:    req.DefaultPort,
+			DefaultProfile: req.DefaultProfile,
+			IsFavorite:     isFav,
+		}
+
 		if err := s.db.SaveModel(ctx, m); err != nil {
 			return &ToolResult{IsError: true, Content: []ToolContent{{Type: "text", Text: err.Error()}}}, nil
+		}
+		if len(req.Profiles) > 0 {
+			for _, p := range req.Profiles {
+				p.ModelID = req.ID
+				if p.CtxSize <= 0 {
+					p.CtxSize = 4096
+				}
+				_ = s.db.SaveProfile(ctx, p)
+			}
 		}
 		return &ToolResult{Content: []ToolContent{{Type: "text", Text: fmt.Sprintf("Model '%s' saved successfully", m.ID)}}}, nil
 

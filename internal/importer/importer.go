@@ -335,6 +335,12 @@ func ImportDirectory(ctx context.Context, database *db.DB, dirPath string) (*Imp
 		})
 
 		// Save Model
+		existingModel, _ := database.GetModel(ctx, parsed.ModelID)
+		isFav := false
+		if existingModel != nil {
+			isFav = existingModel.IsFavorite
+		}
+
 		model := db.Model{
 			ID:             parsed.ModelID,
 			Name:           parsed.ModelName,
@@ -344,7 +350,7 @@ func ImportDirectory(ctx context.Context, database *db.DB, dirPath string) (*Imp
 			MTPPath:        parsed.MTPPath,
 			DefaultPort:    parsed.DefaultPort,
 			DefaultProfile: parsed.DefaultProfile,
-			IsFavorite:     false,
+			IsFavorite:     isFav,
 		}
 		if err := database.SaveModel(ctx, model); err != nil {
 			res.Errors = append(res.Errors, fmt.Sprintf("%s: save model error: %v", name, err))

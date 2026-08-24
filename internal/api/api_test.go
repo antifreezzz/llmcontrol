@@ -137,6 +137,11 @@ func TestModelCRUDAndProfiles(t *testing.T) {
 		t.Errorf("expected 2 profiles, got %d", len(m.Profiles))
 	}
 
+	// Mark as favorite
+	if err := database.SetFavorite(ctx, "new-model", true); err != nil {
+		t.Fatalf("failed to set favorite: %v", err)
+	}
+
 	// 2. PUT /api/models/new-model (update model)
 	updateJSON := `{
 		"name": "Updated Model 7B v2",
@@ -155,6 +160,9 @@ func TestModelCRUDAndProfiles(t *testing.T) {
 	mUpdated, _ := database.GetModel(ctx, "new-model")
 	if mUpdated.Name != "Updated Model 7B v2" {
 		t.Errorf("model name was not updated: %s", mUpdated.Name)
+	}
+	if !mUpdated.IsFavorite {
+		t.Errorf("expected is_favorite to remain true after update")
 	}
 
 	// 3. DELETE /api/models/new-model
