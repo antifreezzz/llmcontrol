@@ -119,6 +119,85 @@ func TestBuildArgs(t *testing.T) {
 	}
 }
 
+func TestBuildArgsParallelAlwaysExplicit(t *testing.T) {
+	sup, _, _ := setupTestSupervisor(t)
+
+	model := &db.Model{
+		ID:        "m",
+		Name:      "M",
+		EngineID:  "llama-vk",
+		ModelPath: "/models/m.gguf",
+	}
+
+	// parallel=1 must still produce an explicit -np 1 (server default may differ)
+	p1 := &db.Profile{ModelID: "m", Name: "default", CtxSize: 4096, Parallel: 1}
+	args1 := strings.Join(sup.BuildArgs(model, p1, 8080), " ")
+	if !strings.Contains(args1, "-np 1") {
+		t.Errorf("expected explicit '-np 1' for parallel=1, got: %s", args1)
+	}
+
+	// parallel=2
+	p2 := &db.Profile{ModelID: "m", Name: "dual", CtxSize: 4096, Parallel: 2}
+	args2 := strings.Join(sup.BuildArgs(model, p2, 8080), " ")
+	if !strings.Contains(args2, "-np 2") {
+		t.Errorf("expected '-np 2' for parallel=2, got: %s", args2)
+	}
+
+	// zero value falls back to an explicit -np 1
+	p0 := &db.Profile{ModelID: "m", Name: "zero", CtxSize: 4096}
+	args0 := strings.Join(sup.BuildArgs(model, p0, 8080), " ")
+	if !strings.Contains(args0, "-np 1") {
+		t.Errorf("expected fallback '-np 1' for unset parallel, got: %s", args0)
+	}
+}
+
+func TestBuildArgsReasoningPreserveAndCacheReuse(t *testing.T) {
+	sup, _, _ := setupTestSupervisor(t)
+
+	model := &db.Model{
+		ID:        "ornith",
+		Name:      "Ornith 9B",
+		EngineID:  "llama-vk",
+		ModelPath: "/models/ornith.gguf",
+	}
+
+	on := &db.Profile{
+		ModelID:           "ornith",
+		Name:              "harness",
+		CtxSize:           65536,
+		Parallel:          2,
+		ReasoningFormat:   "deepseek",
+		PreserveReasoning: true,
+		CacheReuse:        256,
+	}
+	argsOn := strings.Join(sup.BuildArgs(model, on, 8080), " ")
+
+	if !strings.Contains(argsOn, "--reasoning-format deepseek") {
+		t.Errorf("missing reasoning format flag: %s", argsOn)
+	}
+	if !strings.Contains(argsOn, "--reasoning-preserve") {
+		t.Errorf("missing --reasoning-preserve flag: %s", argsOn)
+	}
+	if !strings.Contains(argsOn, "--cache-reuse 256") {
+		t.Errorf("missing '--cache-reuse 256' flag: %s", argsOn)
+	}
+
+	off := &db.Profile{
+		ModelID:  "ornith",
+		Name:     "plain",
+		CtxSize:  65536,
+		Parallel: 2,
+	}
+	argsOff := strings.Join(sup.BuildArgs(model, off, 8080), " ")
+
+	if strings.Contains(argsOff, "--reasoning-preserve") {
+		t.Errorf("--reasoning-preserve must be absent when disabled: %s", argsOff)
+	}
+	if strings.Contains(argsOff, "--cache-reuse") {
+		t.Errorf("--cache-reuse must be absent when cache_reuse=0: %s", argsOff)
+	}
+}
+
 func TestBenchmarkRunner(t *testing.T) {
 	ctx := context.Background()
 	// Mock llama-server HTTP

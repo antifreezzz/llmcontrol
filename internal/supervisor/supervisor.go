@@ -19,6 +19,25 @@ import (
 	"github.com/antifreezzz/llmcontrol/internal/db"
 )
 
+type LLMSlotMetrics struct {
+	Phase           string  `json:"phase"` // "idle", "prompt_eval", "generating"
+	CacheHitPct     float64 `json:"cache_hit_pct"`
+	PromptTokens    int     `json:"prompt_tokens"`
+	PromptCached    int     `json:"prompt_cached"`
+	PromptProcessed int     `json:"prompt_processed"`
+	DecodedTokens   int     `json:"decoded_tokens"`
+	RemainingTokens int     `json:"remaining_tokens"`
+	LiveTPS         float64 `json:"live_tps"`
+	Alert           string  `json:"alert,omitempty"`
+	HasAlert        bool    `json:"has_alert"`
+}
+
+type slotSample struct {
+	taskID    int
+	decoded   int
+	timestamp time.Time
+}
+
 type SupervisorConfig struct {
 	DB            *db.DB
 	LogDir        string
@@ -27,14 +46,20 @@ type SupervisorConfig struct {
 }
 
 type Supervisor struct {
-	db            *db.DB
-	logDir        string
-	host          string
-	exclusiveMode bool
-	mu            sync.Mutex
-	runningCmds   map[string]*exec.Cmd
-	eventChans    map[chan string]struct{}
-	eventMu       sync.RWMutex
+	db             *db.DB
+	logDir         string
+	host           string
+	exclusiveMode  bool
+	mu             sync.Mutex
+	runningCmds    map[string]*exec.Cmd
+	eventChans     map[chan string]struct{}
+	eventMu        sync.RWMutex
+	sampleMu       sync.Mutex
+	lastSample     slotSample
+	liveTPS        float64
+	metricsMu      sync.RWMutex
+	lastMetrics    *LLMSlotMetrics
+	metricsUpdated time.Time
 }
 
 func NewSupervisor(cfg SupervisorConfig) *Supervisor {
@@ -47,7 +72,7 @@ func NewSupervisor(cfg SupervisorConfig) *Supervisor {
 	}
 	_ = os.MkdirAll(cfg.LogDir, 0755)
 
-	return &Supervisor{
+	s := &Supervisor{
 		db:            cfg.DB,
 		logDir:        cfg.LogDir,
 		host:          cfg.Host,
@@ -55,6 +80,8 @@ func NewSupervisor(cfg SupervisorConfig) *Supervisor {
 		runningCmds:   make(map[string]*exec.Cmd),
 		eventChans:    make(map[chan string]struct{}),
 	}
+	s.startBackgroundSlotPoller()
+	return s
 }
 
 func (s *Supervisor) SubscribeEvents() chan string {
@@ -93,9 +120,13 @@ func (s *Supervisor) BuildArgs(m *db.Model, p *db.Profile, port int) []string {
 	if p.CtxSize > 0 {
 		args = append(args, "-c", strconv.Itoa(p.CtxSize))
 	}
-	if p.Parallel > 1 {
-		args = append(args, "-np", strconv.Itoa(p.Parallel))
+	// Always pass -np explicitly: llama-server may auto-scale slots when the
+	// flag is omitted, multiplying KV memory and causing cross-slot cache thrash.
+	parallel := p.Parallel
+	if parallel <= 0 {
+		parallel = 1
 	}
+	args = append(args, "-np", strconv.Itoa(parallel))
 	if p.KVType != "" {
 		args = append(args, "--cache-type-k", p.KVType, "--cache-type-v", p.KVType)
 	}
@@ -128,6 +159,22 @@ func (s *Supervisor) BuildArgs(m *db.Model, p *db.Profile, port int) []string {
 	}
 	if !p.EnableUI {
 		args = append(args, "--no-webui")
+	}
+	// Reasoning / Thinking mode
+	if p.Reasoning != "" && p.Reasoning != "auto" {
+		args = append(args, "--reasoning", p.Reasoning)
+	}
+	if p.ReasoningFormat != "" && p.ReasoningFormat != "auto" {
+		args = append(args, "--reasoning-format", p.ReasoningFormat)
+	}
+	if p.ReasoningBudget >= 0 {
+		args = append(args, "--reasoning-budget", strconv.Itoa(p.ReasoningBudget))
+	}
+	if p.PreserveReasoning {
+		args = append(args, "--reasoning-preserve")
+	}
+	if p.CacheReuse > 0 {
+		args = append(args, "--cache-reuse", strconv.Itoa(p.CacheReuse))
 	}
 	if p.ExtraArgs != "" {
 		extra := strings.Fields(p.ExtraArgs)
@@ -592,4 +639,242 @@ func (s *Supervisor) startOrphanMonitor(modelID string, pid, port int, profileNa
 			}
 		}
 	}()
+}
+
+type llamaSlotNextToken struct {
+	HasNextToken bool `json:"has_next_token"`
+	HasNewLine   bool `json:"has_new_line"`
+	NRemain      int  `json:"n_remain"`
+	NDecoded     int  `json:"n_decoded"`
+}
+
+type llamaSlotItem struct {
+	ID                     int                  `json:"id"`
+	NCtx                   int                  `json:"n_ctx"`
+	Speculative            bool                 `json:"speculative"`
+	IsProcessing           bool                 `json:"is_processing"`
+	IDTask                 int                  `json:"id_task"`
+	NPromptTokens          int                  `json:"n_prompt_tokens"`
+	NPromptTokensProcessed int                  `json:"n_prompt_tokens_processed"`
+	NPromptTokensCache     int                  `json:"n_prompt_tokens_cache"`
+	NextToken              []llamaSlotNextToken `json:"next_token"`
+}
+
+func (s *Supervisor) startBackgroundSlotPoller() {
+	go func() {
+		ticker := time.NewTicker(250 * time.Millisecond)
+		defer ticker.Stop()
+
+		for range ticker.C {
+			active, err := s.db.GetActiveRuntimeStates(context.Background())
+			if err != nil || len(active) == 0 {
+				continue
+			}
+			for _, act := range active {
+				if act.Status == "running" && act.Port > 0 {
+					_ = s.pollSlots(context.Background(), act.Port)
+				}
+			}
+		}
+	}()
+}
+
+func (s *Supervisor) pollSlots(ctx context.Context, port int) *LLMSlotMetrics {
+	if port <= 0 {
+		return &LLMSlotMetrics{Phase: "idle", CacheHitPct: 100}
+	}
+
+	url := fmt.Sprintf("http://%s:%d/slots", s.host, port)
+	client := &http.Client{Timeout: 300 * time.Millisecond}
+	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
+	if err != nil {
+		return s.fallbackSlotMetrics()
+	}
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return s.fallbackSlotMetrics()
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return s.fallbackSlotMetrics()
+	}
+
+	var slots []llamaSlotItem
+	if err := json.NewDecoder(resp.Body).Decode(&slots); err != nil {
+		return s.fallbackSlotMetrics()
+	}
+
+	now := time.Now()
+
+	// 1. Look for active slot
+	var activeSlot *llamaSlotItem
+	for i := range slots {
+		if slots[i].IsProcessing {
+			activeSlot = &slots[i]
+			break
+		}
+	}
+
+	if activeSlot != nil {
+		decoded := 0
+		remain := 0
+		if len(activeSlot.NextToken) > 0 {
+			decoded = activeSlot.NextToken[0].NDecoded
+			remain = activeSlot.NextToken[0].NRemain
+		}
+
+		promptTotal := activeSlot.NPromptTokens
+		if promptTotal == 0 {
+			promptTotal = activeSlot.NPromptTokensProcessed + activeSlot.NPromptTokensCache
+		}
+
+		cachePct := 100.0
+		if promptTotal > 0 {
+			cachePct = float64(activeSlot.NPromptTokensCache) / float64(promptTotal) * 100.0
+		}
+
+		phase := "prompt_eval"
+		if decoded > 0 {
+			phase = "generating"
+		}
+
+		hasAlert := false
+		alertMsg := ""
+		if promptTotal >= 4000 && cachePct < 50.0 {
+			hasAlert = true
+			alertMsg = fmt.Sprintf("Low cache hit: %.1f%% (%d of %d tokens)", cachePct, activeSlot.NPromptTokensCache, promptTotal)
+		}
+
+		// Calculate live TPS if generating
+		liveTPS := 0.0
+		s.sampleMu.Lock()
+		if phase == "generating" && s.lastSample.taskID == activeSlot.IDTask && decoded > s.lastSample.decoded {
+			dt := now.Sub(s.lastSample.timestamp).Seconds()
+			if dt > 0.05 {
+				instTPS := float64(decoded-s.lastSample.decoded) / dt
+				if s.liveTPS > 0 {
+					liveTPS = 0.6*instTPS + 0.4*s.liveTPS
+				} else {
+					liveTPS = instTPS
+				}
+				s.liveTPS = liveTPS
+			}
+		} else if phase != "generating" {
+			s.liveTPS = 0.0
+		} else {
+			liveTPS = s.liveTPS
+		}
+		s.lastSample = slotSample{
+			taskID:    activeSlot.IDTask,
+			decoded:   decoded,
+			timestamp: now,
+		}
+		s.sampleMu.Unlock()
+
+		m := &LLMSlotMetrics{
+			Phase:           phase,
+			CacheHitPct:     cachePct,
+			PromptTokens:    promptTotal,
+			PromptCached:    activeSlot.NPromptTokensCache,
+			PromptProcessed: activeSlot.NPromptTokensProcessed,
+			DecodedTokens:   decoded,
+			RemainingTokens: remain,
+			LiveTPS:         liveTPS,
+			Alert:           alertMsg,
+			HasAlert:        hasAlert,
+		}
+
+		s.metricsMu.Lock()
+		s.lastMetrics = m
+		s.metricsUpdated = now
+		s.metricsMu.Unlock()
+
+		return m
+	}
+
+	// 2. Idle state: find slot with most recent task or highest prompt tokens to preserve last stats
+	var mostRecent *llamaSlotItem
+	for i := range slots {
+		if slots[i].NPromptTokens > 0 {
+			if mostRecent == nil || slots[i].IDTask > mostRecent.IDTask {
+				mostRecent = &slots[i]
+			}
+		}
+	}
+
+	cachePct := 100.0
+	promptTotal := 0
+	cachedTotal := 0
+	hasAlert := false
+	alertMsg := ""
+
+	if mostRecent != nil {
+		promptTotal = mostRecent.NPromptTokens
+		cachedTotal = mostRecent.NPromptTokensCache
+		if promptTotal > 0 {
+			cachePct = float64(cachedTotal) / float64(promptTotal) * 100.0
+		}
+		if promptTotal >= 4000 && cachePct < 50.0 {
+			hasAlert = true
+			alertMsg = fmt.Sprintf("Last prompt cache hit was low: %.1f%% (%d of %d tokens)", cachePct, cachedTotal, promptTotal)
+		}
+	} else {
+		s.metricsMu.RLock()
+		if s.lastMetrics != nil {
+			cachePct = s.lastMetrics.CacheHitPct
+			promptTotal = s.lastMetrics.PromptTokens
+			cachedTotal = s.lastMetrics.PromptCached
+		}
+		s.metricsMu.RUnlock()
+	}
+
+	s.sampleMu.Lock()
+	s.liveTPS = 0.0
+	s.sampleMu.Unlock()
+
+	m := &LLMSlotMetrics{
+		Phase:           "idle",
+		CacheHitPct:     cachePct,
+		PromptTokens:    promptTotal,
+		PromptCached:    cachedTotal,
+		PromptProcessed: 0,
+		DecodedTokens:   0,
+		RemainingTokens: 0,
+		LiveTPS:         0.0,
+		Alert:           alertMsg,
+		HasAlert:        hasAlert,
+	}
+
+	s.metricsMu.Lock()
+	s.lastMetrics = m
+	s.metricsUpdated = now
+	s.metricsMu.Unlock()
+
+	return m
+}
+
+func (s *Supervisor) GetSlotMetrics(ctx context.Context, port int) *LLMSlotMetrics {
+	s.metricsMu.RLock()
+	if s.lastMetrics != nil && time.Since(s.metricsUpdated) < 600*time.Millisecond {
+		res := *s.lastMetrics
+		s.metricsMu.RUnlock()
+		return &res
+	}
+	s.metricsMu.RUnlock()
+
+	return s.pollSlots(ctx, port)
+}
+
+func (s *Supervisor) fallbackSlotMetrics() *LLMSlotMetrics {
+	s.metricsMu.RLock()
+	defer s.metricsMu.RUnlock()
+	if s.lastMetrics != nil {
+		res := *s.lastMetrics
+		res.Phase = "idle"
+		res.LiveTPS = 0.0
+		return &res
+	}
+	return &LLMSlotMetrics{Phase: "idle", CacheHitPct: 100}
 }

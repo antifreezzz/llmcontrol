@@ -173,6 +173,57 @@ func TestModelsAndProfilesCRUD(t *testing.T) {
 	}
 }
 
+func TestProfilePreserveReasoningAndCacheReuse(t *testing.T) {
+	ctx := context.Background()
+	d := setupTestDB(t)
+
+	_ = d.SaveEngine(ctx, Engine{ID: "e1", Name: "E1", BinaryPath: "/bin/true"})
+	_ = d.SaveModel(ctx, Model{ID: "m1", Name: "M1", EngineID: "e1", ModelPath: "/m.gguf"})
+
+	harness := Profile{
+		ModelID:           "m1",
+		Name:              "harness",
+		CtxSize:           8192,
+		EnableUI:          true,
+		Tools:             "safe",
+		ReasoningFormat:   "deepseek",
+		PreserveReasoning: true,
+		CacheReuse:        256,
+	}
+	if err := d.SaveProfile(ctx, harness); err != nil {
+		t.Fatalf("failed to save harness profile: %v", err)
+	}
+
+	got, err := d.GetProfile(ctx, "m1", "harness")
+	if err != nil || got == nil {
+		t.Fatalf("failed to get harness profile: %v", err)
+	}
+	if !got.PreserveReasoning {
+		t.Errorf("expected preserve_reasoning=true roundtrip, got %+v", got)
+	}
+	if got.CacheReuse != 256 {
+		t.Errorf("expected cache_reuse=256 roundtrip, got %d", got.CacheReuse)
+	}
+	if got.ReasoningFormat != "deepseek" {
+		t.Errorf("expected reasoning_format=deepseek, got %q", got.ReasoningFormat)
+	}
+
+	plain := Profile{ModelID: "m1", Name: "plain", CtxSize: 8192, EnableUI: true, Tools: "safe"}
+	if err := d.SaveProfile(ctx, plain); err != nil {
+		t.Fatalf("failed to save plain profile: %v", err)
+	}
+	gotPlain, err := d.GetProfile(ctx, "m1", "plain")
+	if err != nil || gotPlain == nil {
+		t.Fatalf("failed to get plain profile: %v", err)
+	}
+	if gotPlain.PreserveReasoning {
+		t.Errorf("expected preserve_reasoning=false by default, got %+v", gotPlain)
+	}
+	if gotPlain.CacheReuse != 0 {
+		t.Errorf("expected cache_reuse=0 by default, got %d", gotPlain.CacheReuse)
+	}
+}
+
 func TestRuntimeStateAndBenchLogs(t *testing.T) {
 	ctx := context.Background()
 	d := setupTestDB(t)
