@@ -117,9 +117,6 @@ func (s *Supervisor) BuildArgs(m *db.Model, p *db.Profile, port int) []string {
 	args = append(args, "--host", s.host)
 	args = append(args, "--port", strconv.Itoa(port))
 
-	if p.CtxSize > 0 {
-		args = append(args, "-c", strconv.Itoa(p.CtxSize))
-	}
 	// Always pass -np explicitly: llama-server may auto-scale slots when the
 	// flag is omitted, multiplying KV memory and causing cross-slot cache thrash.
 	parallel := p.Parallel
@@ -127,6 +124,11 @@ func (s *Supervisor) BuildArgs(m *db.Model, p *db.Profile, port int) []string {
 		parallel = 1
 	}
 	args = append(args, "-np", strconv.Itoa(parallel))
+	if p.CtxSize > 0 {
+		// With explicit -np the server treats -c as TOTAL context split
+		// across slots; scale it so ctx_size stays per-request.
+		args = append(args, "-c", strconv.Itoa(p.CtxSize*parallel))
+	}
 	if p.KVType != "" {
 		args = append(args, "--cache-type-k", p.KVType, "--cache-type-v", p.KVType)
 	}

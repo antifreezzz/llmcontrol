@@ -198,6 +198,29 @@ func TestBuildArgsReasoningPreserveAndCacheReuse(t *testing.T) {
 	}
 }
 
+func TestBuildArgsContextIsPerSlot(t *testing.T) {
+	sup, _, _ := setupTestSupervisor(t)
+
+	model := &db.Model{ID: "m", Name: "M", EngineID: "llama-vk", ModelPath: "/models/m.gguf"}
+
+	// With explicit -np the server treats -c as TOTAL context split across
+	// slots, so BuildArgs must scale it to keep per-request ctx intact.
+	dual := &db.Profile{ModelID: "m", Name: "dual", CtxSize: 65536, Parallel: 2}
+	argsDual := strings.Join(sup.BuildArgs(model, dual, 8080), " ")
+	if !strings.Contains(argsDual, "-c 131072") {
+		t.Errorf("expected '-c 131072' (ctx_size x parallel) for per-slot 64K, got: %s", argsDual)
+	}
+	if !strings.Contains(argsDual, "-np 2") {
+		t.Errorf("expected '-np 2', got: %s", argsDual)
+	}
+
+	single := &db.Profile{ModelID: "m", Name: "single", CtxSize: 65536, Parallel: 1}
+	argsSingle := strings.Join(sup.BuildArgs(model, single, 8080), " ")
+	if !strings.Contains(argsSingle, "-c 65536") {
+		t.Errorf("expected '-c 65536' for parallel=1, got: %s", argsSingle)
+	}
+}
+
 func TestBenchmarkRunner(t *testing.T) {
 	ctx := context.Background()
 	// Mock llama-server HTTP
