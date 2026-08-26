@@ -121,9 +121,22 @@ func (b *Bot) RenderModelCard(ctx context.Context, modelID string) (string, Inli
 		favIcon = "⭐ Убрать из избранного"
 	}
 
+	netStr := "🔒 Local (127.0.0.1)"
+	if m.Runtime != nil && (m.Runtime.Host == "0.0.0.0" || m.Runtime.Host == "all") {
+		netStr = "🌐 LAN (0.0.0.0)"
+	} else if m.Runtime == nil {
+		for _, p := range m.Profiles {
+			if p.Name == activeProf && p.AllowLAN {
+				netStr = "🌐 LAN (по умолч. профиля)"
+				break
+			}
+		}
+	}
+
 	var sb strings.Builder
 	sb.WriteString(fmt.Sprintf("🤖 <b>%s</b> (<code>%s</code>)\n\n", html.EscapeString(m.Name), html.EscapeString(m.ID)))
 	sb.WriteString(fmt.Sprintf("• <b>Статус:</b> %s\n", statusIcon))
+	sb.WriteString(fmt.Sprintf("• <b>Сеть:</b> %s\n", netStr))
 	sb.WriteString(fmt.Sprintf("• <b>Порт:</b> <code>%d</code> | <b>PID:</b> <code>%s</code>\n", m.DefaultPort, pidStr))
 	sb.WriteString(fmt.Sprintf("• <b>Активный профиль:</b> <code>%s</code>\n", html.EscapeString(activeProf)))
 	sb.WriteString(fmt.Sprintf("• <b>Скорость (тест):</b> %s\n", html.EscapeString(tpsStr)))
@@ -137,15 +150,18 @@ func (b *Bot) RenderModelCard(ctx context.Context, modelID string) (string, Inli
 	var rows [][]InlineKeyboardButton
 
 	// Control buttons
-	if m.Runtime != nil && m.Runtime.Status == "running" {
+	if m.Runtime != nil && (m.Runtime.Status == "running" || m.Runtime.Status == "starting") {
 		rows = append(rows, []InlineKeyboardButton{
 			{Text: "⏹ Остановить", CallbackData: "act:stop:" + m.ID},
 			{Text: "🧪 Benchmark", CallbackData: "act:bench:" + m.ID},
 		})
 	} else {
 		rows = append(rows, []InlineKeyboardButton{
-			{Text: "▶️ Старт (" + activeProf + ")", CallbackData: "act:start:" + m.ID + ":" + activeProf},
-			{Text: "⚡ Профили...", CallbackData: "nav:profiles:" + m.ID},
+			{Text: "▶️ Старт (Local)", CallbackData: "act:start:" + m.ID + ":" + activeProf + ":local"},
+			{Text: "🌐 Старт (LAN)", CallbackData: "act:start:" + m.ID + ":" + activeProf + ":lan"},
+		})
+		rows = append(rows, []InlineKeyboardButton{
+			{Text: "⚡ Все профили...", CallbackData: "nav:profiles:" + m.ID},
 		})
 	}
 
@@ -169,7 +185,11 @@ func (b *Bot) RenderProfilePicker(ctx context.Context, modelID string) (string, 
 	var sb strings.Builder
 	sb.WriteString(fmt.Sprintf("⚡ <b>Выберите профиль для запуска %s:</b>\n\n", html.EscapeString(m.Name)))
 	for _, p := range m.Profiles {
-		sb.WriteString(fmt.Sprintf("• <b>%s</b>: ctx %d", html.EscapeString(p.Name), p.CtxSize))
+		lanTag := "🔒"
+		if p.AllowLAN {
+			lanTag = "🌐"
+		}
+		sb.WriteString(fmt.Sprintf("• <b>%s</b> %s: ctx %d", html.EscapeString(p.Name), lanTag, p.CtxSize))
 		if p.Description != "" {
 			sb.WriteString(fmt.Sprintf(" — <i>%s</i>", html.EscapeString(p.Description)))
 		}
@@ -177,19 +197,11 @@ func (b *Bot) RenderProfilePicker(ctx context.Context, modelID string) (string, 
 	}
 
 	var rows [][]InlineKeyboardButton
-	var pBtns []InlineKeyboardButton
 	for _, p := range m.Profiles {
-		pBtns = append(pBtns, InlineKeyboardButton{
-			Text:         "▶️ " + p.Name,
-			CallbackData: fmt.Sprintf("act:start:%s:%s", m.ID, p.Name),
+		rows = append(rows, []InlineKeyboardButton{
+			{Text: "▶️ " + p.Name + " (Local)", CallbackData: fmt.Sprintf("act:start:%s:%s:local", m.ID, p.Name)},
+			{Text: "🌐 " + p.Name + " (LAN)", CallbackData: fmt.Sprintf("act:start:%s:%s:lan", m.ID, p.Name)},
 		})
-		if len(pBtns) == 2 {
-			rows = append(rows, pBtns)
-			pBtns = []InlineKeyboardButton{}
-		}
-	}
-	if len(pBtns) > 0 {
-		rows = append(rows, pBtns)
 	}
 
 	rows = append(rows, []InlineKeyboardButton{

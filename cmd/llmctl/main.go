@@ -142,22 +142,41 @@ func main() {
 
 	case "start":
 		if len(os.Args) < 3 {
-			fmt.Println("Usage: llmctl start <model_id> [--profile <profile>]")
+			fmt.Println("Usage: llmctl start <model_id> [--profile <profile>] [--lan | --local]")
 			os.Exit(1)
 		}
 		modelID := os.Args[2]
 		profile := ""
+		var allowLAN *bool
 		for i := 3; i < len(os.Args); i++ {
 			if os.Args[i] == "--profile" && i+1 < len(os.Args) {
 				profile = os.Args[i+1]
 				i++
+			} else if os.Args[i] == "--lan" {
+				val := true
+				allowLAN = &val
+			} else if os.Args[i] == "--local" {
+				val := false
+				allowLAN = &val
 			}
 		}
-		fmt.Printf("🚀 Starting model '%s' (profile: %s)...\n", modelID, profile)
+		lanStr := "auto"
+		if allowLAN != nil {
+			if *allowLAN {
+				lanStr = "LAN (0.0.0.0)"
+			} else {
+				lanStr = "Local (127.0.0.1)"
+			}
+		}
+		fmt.Printf("🚀 Starting model '%s' (profile: %s, network: %s)...\n", modelID, profile, lanStr)
 
 		// Try daemon API first if running
 		daemonURL := fmt.Sprintf("http://127.0.0.1:%d/api/models/%s/start", cfg.HTTPPort, modelID)
-		body, _ := json.Marshal(map[string]string{"profile": profile})
+		bodyData := map[string]interface{}{"profile": profile}
+		if allowLAN != nil {
+			bodyData["allow_lan"] = *allowLAN
+		}
+		body, _ := json.Marshal(bodyData)
 		resp, err := http.Post(daemonURL, "application/json", bytes.NewReader(body))
 		if err == nil && resp.StatusCode == 200 {
 			resp.Body.Close()
@@ -168,7 +187,11 @@ func main() {
 			resp.Body.Close()
 		}
 
-		if err := sup.StartModel(ctx, modelID, profile); err != nil {
+		var lanOverride []bool
+		if allowLAN != nil {
+			lanOverride = []bool{*allowLAN}
+		}
+		if err := sup.StartModel(ctx, modelID, profile, lanOverride...); err != nil {
 			fmt.Printf("Failed to start: %v\n", err)
 			os.Exit(1)
 		}

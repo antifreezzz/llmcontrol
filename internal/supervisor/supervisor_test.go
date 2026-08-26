@@ -178,6 +178,29 @@ func TestBuildArgs(t *testing.T) {
 	if strings.Contains(noneArgsStr, "--spec-type") || strings.Contains(noneArgsStr, "-md") {
 		t.Errorf("spec-type none must NOT contain speculative flags, got: %s", noneArgsStr)
 	}
+
+	// LAN access tests
+	lanProf := &db.Profile{
+		ModelID:  "katcoder",
+		Name:     "lan",
+		AllowLAN: true,
+	}
+	lanArgs := sup.BuildArgs(katModel, lanProf, 8080)
+	lanArgsStr := strings.Join(lanArgs, " ")
+	if !strings.Contains(lanArgsStr, "--host 0.0.0.0") {
+		t.Errorf("expected '--host 0.0.0.0' for AllowLAN=true, got: %s", lanArgsStr)
+	}
+
+	localProf := &db.Profile{
+		ModelID:  "katcoder",
+		Name:     "local",
+		AllowLAN: false,
+	}
+	localArgs := sup.BuildArgs(katModel, localProf, 8080)
+	localArgsStr := strings.Join(localArgs, " ")
+	if !strings.Contains(localArgsStr, "--host 127.0.0.1") {
+		t.Errorf("expected '--host 127.0.0.1' for AllowLAN=false, got: %s", localArgsStr)
+	}
 }
 
 func TestBuildArgsParallelAlwaysExplicit(t *testing.T) {

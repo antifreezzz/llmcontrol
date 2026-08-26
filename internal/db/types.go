@@ -40,6 +40,7 @@ type Profile struct {
 	DraftNGL          int    `json:"draft_ngl,omitempty"`
 	UseVision         bool   `json:"use_vision"`
 	EnableUI          bool   `json:"enable_ui"`
+	AllowLAN          bool   `json:"allow_lan"`                    // --host 0.0.0.0 (LAN access) vs 127.0.0.1 (local only)
 	Tools             string `json:"tools"`
 	Reasoning         string `json:"reasoning,omitempty"`          // 'auto', 'on', 'off'
 	ReasoningFormat   string `json:"reasoning_format,omitempty"`   // 'auto', 'none', 'deepseek', 'deepseek-legacy'
@@ -53,6 +54,7 @@ type RuntimeState struct {
 	ModelID     string     `json:"model_id"`
 	PID         int        `json:"pid"`
 	Port        int        `json:"port"`
+	Host        string     `json:"host,omitempty"` // '127.0.0.1' or '0.0.0.0'
 	ProfileName string     `json:"profile_name"`
 	Status      string     `json:"status"` // 'stopped', 'starting', 'running', 'error'
 	StartedAt   *time.Time `json:"started_at,omitempty"`

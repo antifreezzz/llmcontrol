@@ -113,8 +113,18 @@ func (s *Supervisor) broadcastEvent(event string) {
 func (s *Supervisor) BuildArgs(m *db.Model, p *db.Profile, port int) []string {
 	var args []string
 
+	host := s.host
+	if host == "" {
+		host = "127.0.0.1"
+	}
+	if p.AllowLAN {
+		host = "0.0.0.0"
+	}
+
 	args = append(args, "-m", m.ModelPath)
-	args = append(args, "--host", s.host)
+	if !strings.Contains(p.ExtraArgs, "--host") {
+		args = append(args, "--host", host)
+	}
 	args = append(args, "--port", strconv.Itoa(port))
 
 	// Always pass -np explicitly: llama-server may auto-scale slots when the
@@ -197,7 +207,7 @@ func (s *Supervisor) BuildArgs(m *db.Model, p *db.Profile, port int) []string {
 	return args
 }
 
-func (s *Supervisor) StartProcessOnly(ctx context.Context, modelID, profileName string) (*exec.Cmd, error) {
+func (s *Supervisor) StartProcessOnly(ctx context.Context, modelID, profileName string, lanOverride ...bool) (*exec.Cmd, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -227,6 +237,11 @@ func (s *Supervisor) StartProcessOnly(ctx context.Context, modelID, profileName 
 			CtxSize:  4096,
 			EnableUI: true,
 		}
+	}
+	if len(lanOverride) > 0 {
+		pCopy := *profile
+		pCopy.AllowLAN = lanOverride[0]
+		profile = &pCopy
 	}
 
 	eng, err := s.db.GetEngine(ctx, model.EngineID)
@@ -287,11 +302,17 @@ func (s *Supervisor) StartProcessOnly(ctx context.Context, modelID, profileName 
 	pid := cmd.Process.Pid
 	s.runningCmds[modelID] = cmd
 
+	boundHost := "127.0.0.1"
+	if profile.AllowLAN {
+		boundHost = "0.0.0.0"
+	}
+
 	now := time.Now()
 	_ = s.db.SetRuntimeState(ctx, db.RuntimeState{
 		ModelID:     modelID,
 		PID:         pid,
 		Port:        port,
+		Host:        boundHost,
 		ProfileName: profileName,
 		Status:      "starting",
 		StartedAt:   &now,
@@ -308,6 +329,7 @@ func (s *Supervisor) StartProcessOnly(ctx context.Context, modelID, profileName 
 			ModelID:     modelID,
 			PID:         0,
 			Port:        port,
+			Host:        boundHost,
 			ProfileName: profileName,
 			Status:      "stopped",
 		})
@@ -318,8 +340,8 @@ func (s *Supervisor) StartProcessOnly(ctx context.Context, modelID, profileName 
 	return cmd, nil
 }
 
-func (s *Supervisor) StartModel(ctx context.Context, modelID, profileName string) error {
-	cmd, err := s.StartProcessOnly(ctx, modelID, profileName)
+func (s *Supervisor) StartModel(ctx context.Context, modelID, profileName string, lanOverride ...bool) error {
+	cmd, err := s.StartProcessOnly(ctx, modelID, profileName, lanOverride...)
 	if err != nil {
 		return err
 	}
@@ -330,9 +352,21 @@ func (s *Supervisor) StartModel(ctx context.Context, modelID, profileName string
 		port = model.DefaultPort
 	}
 
+	boundHost := "127.0.0.1"
+	if len(lanOverride) > 0 && lanOverride[0] {
+		boundHost = "0.0.0.0"
+	} else if model != nil {
+		for _, p := range model.Profiles {
+			if p.Name == profileName && p.AllowLAN {
+				boundHost = "0.0.0.0"
+				break
+			}
+		}
+	}
+
 	// Healthcheck loop (up to 60s)
 	go func() {
-		baseURL := fmt.Sprintf("http://%s:%d", s.host, port)
+		baseURL := fmt.Sprintf("http://127.0.0.1:%d", port)
 		client := &http.Client{Timeout: 2 * time.Second}
 		start := time.Now()
 
@@ -350,6 +384,7 @@ func (s *Supervisor) StartModel(ctx context.Context, modelID, profileName string
 						ModelID:     modelID,
 						PID:         cmd.Process.Pid,
 						Port:        port,
+						Host:        boundHost,
 						ProfileName: profileName,
 						Status:      "running",
 						StartedAt:   &now,

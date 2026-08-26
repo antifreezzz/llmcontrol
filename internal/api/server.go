@@ -358,7 +358,8 @@ func (s *Server) handleGetModel(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleStartModel(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	var req struct {
-		Profile string `json:"profile"`
+		Profile  string `json:"profile"`
+		AllowLAN *bool  `json:"allow_lan,omitempty"`
 	}
 	_ = json.NewDecoder(r.Body).Decode(&req)
 	profile := req.Profile
@@ -366,7 +367,16 @@ func (s *Server) handleStartModel(w http.ResponseWriter, r *http.Request) {
 		profile = r.URL.Query().Get("profile")
 	}
 
-	if err := s.supervisor.StartModel(r.Context(), id, profile); err != nil {
+	var lanOverride []bool
+	if req.AllowLAN != nil {
+		lanOverride = []bool{*req.AllowLAN}
+	} else if lanQ := r.URL.Query().Get("lan"); lanQ != "" {
+		lanOverride = []bool{lanQ == "1" || lanQ == "true"}
+	} else if lanQ := r.URL.Query().Get("allow_lan"); lanQ != "" {
+		lanOverride = []bool{lanQ == "1" || lanQ == "true"}
+	}
+
+	if err := s.supervisor.StartModel(r.Context(), id, profile, lanOverride...); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}

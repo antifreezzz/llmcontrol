@@ -82,6 +82,7 @@ func (d *DB) initSchema(ctx context.Context) error {
 		draft_ngl INTEGER DEFAULT 0,
 		use_vision BOOLEAN DEFAULT 0,
 		enable_ui BOOLEAN DEFAULT 1,
+		allow_lan BOOLEAN DEFAULT 0,
 		tools TEXT DEFAULT 'safe',
 		extra_args TEXT DEFAULT '',
 		UNIQUE(model_id, name)
@@ -91,6 +92,7 @@ func (d *DB) initSchema(ctx context.Context) error {
 		model_id TEXT PRIMARY KEY REFERENCES models(id) ON DELETE CASCADE,
 		pid INTEGER DEFAULT 0,
 		port INTEGER NOT NULL,
+		host TEXT DEFAULT '127.0.0.1',
 		profile_name TEXT NOT NULL,
 		status TEXT NOT NULL,
 		started_at DATETIME,
@@ -124,18 +126,22 @@ func (d *DB) initSchema(ctx context.Context) error {
 	_, _ = d.db.ExecContext(ctx, "ALTER TABLE profiles ADD COLUMN draft_model TEXT DEFAULT ''")
 	_, _ = d.db.ExecContext(ctx, "ALTER TABLE profiles ADD COLUMN draft_n_max INTEGER DEFAULT 0")
 	_, _ = d.db.ExecContext(ctx, "ALTER TABLE profiles ADD COLUMN draft_ngl INTEGER DEFAULT 0")
+	_, _ = d.db.ExecContext(ctx, "ALTER TABLE profiles ADD COLUMN allow_lan BOOLEAN DEFAULT 0")
 	_, _ = d.db.ExecContext(ctx, "ALTER TABLE profiles ADD COLUMN reasoning TEXT DEFAULT 'auto'")
 	_, _ = d.db.ExecContext(ctx, "ALTER TABLE profiles ADD COLUMN reasoning_format TEXT DEFAULT 'auto'")
 	_, _ = d.db.ExecContext(ctx, "ALTER TABLE profiles ADD COLUMN reasoning_budget INTEGER DEFAULT -1")
 	_, _ = d.db.ExecContext(ctx, "ALTER TABLE profiles ADD COLUMN preserve_reasoning BOOLEAN DEFAULT 0")
 	_, _ = d.db.ExecContext(ctx, "ALTER TABLE profiles ADD COLUMN cache_reuse INTEGER DEFAULT 0")
+	_, _ = d.db.ExecContext(ctx, "ALTER TABLE runtime_state ADD COLUMN host TEXT DEFAULT '127.0.0.1'")
 	_, _ = d.db.ExecContext(ctx, "UPDATE profiles SET spec_type = '' WHERE spec_type IS NULL")
 	_, _ = d.db.ExecContext(ctx, "UPDATE profiles SET draft_model = '' WHERE draft_model IS NULL")
 	_, _ = d.db.ExecContext(ctx, "UPDATE profiles SET draft_n_max = 0 WHERE draft_n_max IS NULL")
 	_, _ = d.db.ExecContext(ctx, "UPDATE profiles SET draft_ngl = 0 WHERE draft_ngl IS NULL")
+	_, _ = d.db.ExecContext(ctx, "UPDATE profiles SET allow_lan = 0 WHERE allow_lan IS NULL")
 	_, _ = d.db.ExecContext(ctx, "UPDATE profiles SET reasoning = 'auto' WHERE reasoning IS NULL OR reasoning = ''")
 	_, _ = d.db.ExecContext(ctx, "UPDATE profiles SET reasoning_format = 'auto' WHERE reasoning_format IS NULL OR reasoning_format = ''")
 	_, _ = d.db.ExecContext(ctx, "UPDATE profiles SET reasoning_budget = -1 WHERE reasoning_budget IS NULL")
+	_, _ = d.db.ExecContext(ctx, "UPDATE runtime_state SET host = '127.0.0.1' WHERE host IS NULL OR host = ''")
 
 	return nil
 }
@@ -229,7 +235,7 @@ func (d *DB) GetModel(ctx context.Context, id string) (*Model, error) {
 
 	// Profiles
 	pRows, err := d.db.QueryContext(ctx, `
-		SELECT id, model_id, name, description, ctx_size, parallel, kv_type, flash_attn, use_mtp, COALESCE(spec_type, ''), COALESCE(draft_model, ''), COALESCE(draft_n_max, 0), COALESCE(draft_ngl, 0), use_vision, enable_ui, tools, COALESCE(reasoning, 'auto'), COALESCE(reasoning_format, 'auto'), COALESCE(reasoning_budget, -1), COALESCE(preserve_reasoning, 0), COALESCE(cache_reuse, 0), extra_args
+		SELECT id, model_id, name, description, ctx_size, parallel, kv_type, flash_attn, use_mtp, COALESCE(spec_type, ''), COALESCE(draft_model, ''), COALESCE(draft_n_max, 0), COALESCE(draft_ngl, 0), use_vision, enable_ui, COALESCE(allow_lan, 0), tools, COALESCE(reasoning, 'auto'), COALESCE(reasoning_format, 'auto'), COALESCE(reasoning_budget, -1), COALESCE(preserve_reasoning, 0), COALESCE(cache_reuse, 0), extra_args
 		FROM profiles WHERE model_id = ? ORDER BY id
 	`, id)
 	if err != nil {
@@ -239,16 +245,16 @@ func (d *DB) GetModel(ctx context.Context, id string) (*Model, error) {
 
 	for pRows.Next() {
 		var p Profile
-		if err := pRows.Scan(&p.ID, &p.ModelID, &p.Name, &p.Description, &p.CtxSize, &p.Parallel, &p.KVType, &p.FlashAttn, &p.UseMTP, &p.SpecType, &p.DraftModelPath, &p.DraftNMax, &p.DraftNGL, &p.UseVision, &p.EnableUI, &p.Tools, &p.Reasoning, &p.ReasoningFormat, &p.ReasoningBudget, &p.PreserveReasoning, &p.CacheReuse, &p.ExtraArgs); err != nil {
+		if err := pRows.Scan(&p.ID, &p.ModelID, &p.Name, &p.Description, &p.CtxSize, &p.Parallel, &p.KVType, &p.FlashAttn, &p.UseMTP, &p.SpecType, &p.DraftModelPath, &p.DraftNMax, &p.DraftNGL, &p.UseVision, &p.EnableUI, &p.AllowLAN, &p.Tools, &p.Reasoning, &p.ReasoningFormat, &p.ReasoningBudget, &p.PreserveReasoning, &p.CacheReuse, &p.ExtraArgs); err != nil {
 			return nil, err
 		}
 		m.Profiles = append(m.Profiles, p)
 	}
 
 	// Runtime state
-	rtRow := d.db.QueryRowContext(ctx, `SELECT model_id, pid, port, profile_name, status, started_at, last_error FROM runtime_state WHERE model_id = ?`, id)
+	rtRow := d.db.QueryRowContext(ctx, `SELECT model_id, pid, port, COALESCE(host, '127.0.0.1'), profile_name, status, started_at, last_error FROM runtime_state WHERE model_id = ?`, id)
 	var rt RuntimeState
-	if err := rtRow.Scan(&rt.ModelID, &rt.PID, &rt.Port, &rt.ProfileName, &rt.Status, &rt.StartedAt, &rt.LastError); err == nil {
+	if err := rtRow.Scan(&rt.ModelID, &rt.PID, &rt.Port, &rt.Host, &rt.ProfileName, &rt.Status, &rt.StartedAt, &rt.LastError); err == nil {
 		d.sanitizeRuntimeState(ctx, &rt)
 		m.Runtime = &rt
 	}
@@ -281,22 +287,22 @@ func (d *DB) ListModels(ctx context.Context) ([]Model, error) {
 	for i := range list {
 		id := list[i].ID
 		pRows, err := d.db.QueryContext(ctx, `
-			SELECT id, model_id, name, description, ctx_size, parallel, kv_type, flash_attn, use_mtp, COALESCE(spec_type, ''), COALESCE(draft_model, ''), COALESCE(draft_n_max, 0), COALESCE(draft_ngl, 0), use_vision, enable_ui, tools, COALESCE(reasoning, 'auto'), COALESCE(reasoning_format, 'auto'), COALESCE(reasoning_budget, -1), COALESCE(preserve_reasoning, 0), COALESCE(cache_reuse, 0), extra_args
+			SELECT id, model_id, name, description, ctx_size, parallel, kv_type, flash_attn, use_mtp, COALESCE(spec_type, ''), COALESCE(draft_model, ''), COALESCE(draft_n_max, 0), COALESCE(draft_ngl, 0), use_vision, enable_ui, COALESCE(allow_lan, 0), tools, COALESCE(reasoning, 'auto'), COALESCE(reasoning_format, 'auto'), COALESCE(reasoning_budget, -1), COALESCE(preserve_reasoning, 0), COALESCE(cache_reuse, 0), extra_args
 			FROM profiles WHERE model_id = ? ORDER BY id
 		`, id)
 		if err == nil {
 			for pRows.Next() {
 				var p Profile
-				if err := pRows.Scan(&p.ID, &p.ModelID, &p.Name, &p.Description, &p.CtxSize, &p.Parallel, &p.KVType, &p.FlashAttn, &p.UseMTP, &p.SpecType, &p.DraftModelPath, &p.DraftNMax, &p.DraftNGL, &p.UseVision, &p.EnableUI, &p.Tools, &p.Reasoning, &p.ReasoningFormat, &p.ReasoningBudget, &p.PreserveReasoning, &p.CacheReuse, &p.ExtraArgs); err == nil {
+				if err := pRows.Scan(&p.ID, &p.ModelID, &p.Name, &p.Description, &p.CtxSize, &p.Parallel, &p.KVType, &p.FlashAttn, &p.UseMTP, &p.SpecType, &p.DraftModelPath, &p.DraftNMax, &p.DraftNGL, &p.UseVision, &p.EnableUI, &p.AllowLAN, &p.Tools, &p.Reasoning, &p.ReasoningFormat, &p.ReasoningBudget, &p.PreserveReasoning, &p.CacheReuse, &p.ExtraArgs); err == nil {
 					list[i].Profiles = append(list[i].Profiles, p)
 				}
 			}
 			pRows.Close()
 		}
 
-		rtRow := d.db.QueryRowContext(ctx, `SELECT model_id, pid, port, profile_name, status, started_at, last_error FROM runtime_state WHERE model_id = ?`, id)
+		rtRow := d.db.QueryRowContext(ctx, `SELECT model_id, pid, port, COALESCE(host, '127.0.0.1'), profile_name, status, started_at, last_error FROM runtime_state WHERE model_id = ?`, id)
 		var rt RuntimeState
-		if err := rtRow.Scan(&rt.ModelID, &rt.PID, &rt.Port, &rt.ProfileName, &rt.Status, &rt.StartedAt, &rt.LastError); err == nil {
+		if err := rtRow.Scan(&rt.ModelID, &rt.PID, &rt.Port, &rt.Host, &rt.ProfileName, &rt.Status, &rt.StartedAt, &rt.LastError); err == nil {
 			d.sanitizeRuntimeState(ctx, &rt)
 			list[i].Runtime = &rt
 		}
@@ -356,8 +362,8 @@ func (d *DB) SaveProfile(ctx context.Context, p Profile) error {
 		// keep 0 if explicitly set, default -1 if not set
 	}
 	query := `
-	INSERT INTO profiles (model_id, name, description, ctx_size, parallel, kv_type, flash_attn, use_mtp, spec_type, draft_model, draft_n_max, draft_ngl, use_vision, enable_ui, tools, reasoning, reasoning_format, reasoning_budget, preserve_reasoning, cache_reuse, extra_args)
-	VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	INSERT INTO profiles (model_id, name, description, ctx_size, parallel, kv_type, flash_attn, use_mtp, spec_type, draft_model, draft_n_max, draft_ngl, use_vision, enable_ui, allow_lan, tools, reasoning, reasoning_format, reasoning_budget, preserve_reasoning, cache_reuse, extra_args)
+	VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	ON CONFLICT(model_id, name) DO UPDATE SET
 		description=excluded.description,
 		ctx_size=excluded.ctx_size,
@@ -371,6 +377,7 @@ func (d *DB) SaveProfile(ctx context.Context, p Profile) error {
 		draft_ngl=excluded.draft_ngl,
 		use_vision=excluded.use_vision,
 		enable_ui=excluded.enable_ui,
+		allow_lan=excluded.allow_lan,
 		tools=excluded.tools,
 		reasoning=excluded.reasoning,
 		reasoning_format=excluded.reasoning_format,
@@ -379,7 +386,7 @@ func (d *DB) SaveProfile(ctx context.Context, p Profile) error {
 		cache_reuse=excluded.cache_reuse,
 		extra_args=excluded.extra_args;
 	`
-	_, err := d.db.ExecContext(ctx, query, p.ModelID, p.Name, p.Description, p.CtxSize, p.Parallel, p.KVType, p.FlashAttn, p.UseMTP, p.SpecType, p.DraftModelPath, p.DraftNMax, p.DraftNGL, p.UseVision, p.EnableUI, p.Tools, p.Reasoning, p.ReasoningFormat, p.ReasoningBudget, p.PreserveReasoning, p.CacheReuse, p.ExtraArgs)
+	_, err := d.db.ExecContext(ctx, query, p.ModelID, p.Name, p.Description, p.CtxSize, p.Parallel, p.KVType, p.FlashAttn, p.UseMTP, p.SpecType, p.DraftModelPath, p.DraftNMax, p.DraftNGL, p.UseVision, p.EnableUI, p.AllowLAN, p.Tools, p.Reasoning, p.ReasoningFormat, p.ReasoningBudget, p.PreserveReasoning, p.CacheReuse, p.ExtraArgs)
 	return err
 }
 
@@ -387,11 +394,11 @@ func (d *DB) GetProfile(ctx context.Context, modelID, profileName string) (*Prof
 	d.mu.RLock()
 	defer d.mu.RUnlock()
 	row := d.db.QueryRowContext(ctx, `
-		SELECT id, model_id, name, description, ctx_size, parallel, kv_type, flash_attn, use_mtp, COALESCE(spec_type, ''), COALESCE(draft_model, ''), COALESCE(draft_n_max, 0), COALESCE(draft_ngl, 0), use_vision, enable_ui, tools, COALESCE(reasoning, 'auto'), COALESCE(reasoning_format, 'auto'), COALESCE(reasoning_budget, -1), COALESCE(preserve_reasoning, 0), COALESCE(cache_reuse, 0), extra_args
+		SELECT id, model_id, name, description, ctx_size, parallel, kv_type, flash_attn, use_mtp, COALESCE(spec_type, ''), COALESCE(draft_model, ''), COALESCE(draft_n_max, 0), COALESCE(draft_ngl, 0), use_vision, enable_ui, COALESCE(allow_lan, 0), tools, COALESCE(reasoning, 'auto'), COALESCE(reasoning_format, 'auto'), COALESCE(reasoning_budget, -1), COALESCE(preserve_reasoning, 0), COALESCE(cache_reuse, 0), extra_args
 		FROM profiles WHERE model_id = ? AND name = ?
 	`, modelID, profileName)
 	var p Profile
-	if err := row.Scan(&p.ID, &p.ModelID, &p.Name, &p.Description, &p.CtxSize, &p.Parallel, &p.KVType, &p.FlashAttn, &p.UseMTP, &p.SpecType, &p.DraftModelPath, &p.DraftNMax, &p.DraftNGL, &p.UseVision, &p.EnableUI, &p.Tools, &p.Reasoning, &p.ReasoningFormat, &p.ReasoningBudget, &p.PreserveReasoning, &p.CacheReuse, &p.ExtraArgs); err != nil {
+	if err := row.Scan(&p.ID, &p.ModelID, &p.Name, &p.Description, &p.CtxSize, &p.Parallel, &p.KVType, &p.FlashAttn, &p.UseMTP, &p.SpecType, &p.DraftModelPath, &p.DraftNMax, &p.DraftNGL, &p.UseVision, &p.EnableUI, &p.AllowLAN, &p.Tools, &p.Reasoning, &p.ReasoningFormat, &p.ReasoningBudget, &p.PreserveReasoning, &p.CacheReuse, &p.ExtraArgs); err != nil {
 		if err == sql.ErrNoRows {
 			return nil, nil
 		}
@@ -415,18 +422,22 @@ func (d *DB) SetRuntimeState(ctx context.Context, r RuntimeState) error {
 	if r.StartedAt == nil && (r.Status == "starting" || r.Status == "running") {
 		r.StartedAt = &now
 	}
+	if r.Host == "" {
+		r.Host = "127.0.0.1"
+	}
 	query := `
-	INSERT INTO runtime_state (model_id, pid, port, profile_name, status, started_at, last_error)
-	VALUES (?, ?, ?, ?, ?, ?, ?)
+	INSERT INTO runtime_state (model_id, pid, port, host, profile_name, status, started_at, last_error)
+	VALUES (?, ?, ?, ?, ?, ?, ?, ?)
 	ON CONFLICT(model_id) DO UPDATE SET
 		pid=excluded.pid,
 		port=excluded.port,
+		host=excluded.host,
 		profile_name=excluded.profile_name,
 		status=excluded.status,
 		started_at=excluded.started_at,
 		last_error=excluded.last_error;
 	`
-	_, err := d.db.ExecContext(ctx, query, r.ModelID, r.PID, r.Port, r.ProfileName, r.Status, r.StartedAt, r.LastError)
+	_, err := d.db.ExecContext(ctx, query, r.ModelID, r.PID, r.Port, r.Host, r.ProfileName, r.Status, r.StartedAt, r.LastError)
 	return err
 }
 

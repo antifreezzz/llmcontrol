@@ -231,7 +231,15 @@ func (b *Bot) handleCallback(ctx context.Context, cb *CallbackQuery) {
 			if len(parts) >= 4 {
 				modelID := parts[2]
 				profileName := parts[3]
-				_ = b.sup.StartModel(ctx, modelID, profileName)
+				var lanOverride []bool
+				if len(parts) >= 5 {
+					if parts[4] == "lan" {
+						lanOverride = []bool{true}
+					} else if parts[4] == "local" {
+						lanOverride = []bool{false}
+					}
+				}
+				_ = b.sup.StartModel(ctx, modelID, profileName, lanOverride...)
 				// Render updated card
 				time.Sleep(200 * time.Millisecond)
 				txt, kb, _ := b.RenderModelCard(ctx, modelID)

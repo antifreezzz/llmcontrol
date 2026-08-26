@@ -625,8 +625,12 @@
                   </div>
                 </div>
               </div>
+            <div class="form-row">
+              <label class="checkbox-group">
+                <input type="checkbox" id="p-lan" onchange="syncCurrentProfile()" />
+                <span>🌐 Разрешить доступ по локальной сети (--host 0.0.0.0)</span>
+              </label>
             </div>
-
             <div class="form-row">
               <label class="checkbox-group">
                 <input type="checkbox" id="p-vision" onchange="syncCurrentProfile()" />
@@ -850,6 +854,8 @@
         const isStarting = m.runtime && m.runtime.status === 'starting';
         const statusClass = isRunning ? 'status-running' : (isStarting ? 'status-starting' : 'status-stopped');
         const statusText = isRunning ? 'RUNNING' : (isStarting ? 'STARTING...' : 'STOPPED');
+        const activeProfName = m.runtime?.profile_name || m.default_profile || (m.profiles?.[0]?.name) || 'default';
+        const defaultProf = (m.profiles || []).find(p => p.name === activeProfName) || m.profiles?.[0];
 
         const card = document.createElement('div');
         card.id = `card-${m.id}`;
@@ -891,19 +897,23 @@
 
           <div class="meta-grid">
             <div class="meta-item"><span>Port:</span> <b>${m.default_port}</b></div>
+            <div class="meta-item"><span>Network:</span> <b>${isRunning ? (m.runtime?.host === '0.0.0.0' ? '🌐 LAN' : '🔒 Local') : (defaultProf?.allow_lan ? '🌐 LAN' : '🔒 Local')}</b></div>
             <div class="meta-item"><span>PID:</span> <b id="pid-${m.id}">${m.runtime ? m.runtime.pid || '-' : '-'}</b></div>
             <div class="meta-item"><span>MTP Spec:</span> <b>${m.mtp_path ? 'Yes' : 'No'}</b></div>
-            <div class="meta-item"><span>Vision:</span> <b>${m.mmproj_path ? 'Yes' : 'No'}</b></div>
           </div>
 
           <div id="telemetry-box-${m.id}"></div>
 
           <div class="controls">
             <div class="profile-select-wrapper">
-              <select id="prof-${m.id}" ${isRunning ? 'disabled' : ''}>
-                ${(m.profiles || []).map(p => `<option value="${p.name}" ${p.name === (m.runtime?.profile_name || m.default_profile) ? 'selected' : ''}>Profile: ${p.name} (ctx ${p.ctx_size}, ${p.kv_type || 'q8_0'})</option>`).join('')}
+              <select id="prof-${m.id}" onchange="onCardProfileChange('${m.id}')" ${isRunning ? 'disabled' : ''}>
+                ${(m.profiles || []).map(p => `<option value="${p.name}" ${p.name === activeProfName ? 'selected' : ''}>Profile: ${p.name} (ctx ${p.ctx_size}${p.allow_lan ? ', 🌐 LAN' : ''})</option>`).join('')}
               </select>
             </div>
+            <label class="checkbox-group" style="margin: 0; font-size: 11px; white-space: nowrap; cursor: pointer;" title="Доступ по локальной сети (--host 0.0.0.0)">
+              <input type="checkbox" id="lan-${m.id}" ${isRunning ? 'disabled' : ''} ${defaultProf?.allow_lan ? 'checked' : ''} />
+              <span>🌐 LAN</span>
+            </label>
             <div id="btngroup-${m.id}">
               ${buttonGroupHTML}
             </div>
@@ -913,13 +923,27 @@
       });
     }
 
+    function onCardProfileChange(id) {
+      const m = allModels.find(x => x.id === id);
+      if (!m) return;
+      const select = document.getElementById(`prof-${id}`);
+      const profName = select ? select.value : '';
+      const prof = (m.profiles || []).find(p => p.name === profName);
+      const lanCheck = document.getElementById(`lan-${id}`);
+      if (lanCheck && prof) {
+        lanCheck.checked = !!prof.allow_lan;
+      }
+    }
+
     async function startModel(id) {
       const select = document.getElementById(`prof-${id}`);
       const profile = select ? select.value : 'default';
+      const lanCheck = document.getElementById(`lan-${id}`);
+      const allow_lan = lanCheck ? lanCheck.checked : false;
       await fetch(`/api/models/${id}/start`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ profile })
+        body: JSON.stringify({ profile, allow_lan })
       });
       loadAll();
       showLogs(id);
@@ -1088,6 +1112,7 @@
         document.getElementById('p-draft-model').value = cur.draft_model_path || '';
         document.getElementById('p-draft-n-max').value = cur.draft_n_max || '';
         document.getElementById('p-draft-ngl').value = cur.draft_ngl || '';
+        document.getElementById('p-lan').checked = !!cur.allow_lan;
         document.getElementById('p-vision').checked = !!cur.use_vision;
         document.getElementById('p-ui').checked = cur.enable_ui !== false;
         document.getElementById('p-tools').value = cur.tools || 'safe';
@@ -1135,6 +1160,7 @@
       cur.draft_model_path = document.getElementById('p-draft-model').value.trim();
       cur.draft_n_max = parseInt(document.getElementById('p-draft-n-max').value) || 0;
       cur.draft_ngl = parseInt(document.getElementById('p-draft-ngl').value) || 0;
+      cur.allow_lan = document.getElementById('p-lan').checked;
       cur.use_vision = document.getElementById('p-vision').checked;
       cur.enable_ui = document.getElementById('p-ui').checked;
       cur.tools = document.getElementById('p-tools').value;
