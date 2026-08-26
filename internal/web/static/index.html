@@ -574,39 +574,57 @@
               </div>
             </div>
 
-            <div style="border: 1px solid var(--border); border-radius: 6px; padding: 8px 10px; margin-top: 6px; margin-bottom: 8px; background: rgba(255, 255, 255, 0.02);">
-              <div style="font-weight: 600; font-size: 12px; margin-bottom: 6px; color: var(--accent);">⚡ Спекулятивное декодирование (Speculative Decoding)</div>
-              <div class="form-row">
-                <div class="form-group" style="flex: 1.2;">
-                  <label>Метод (--spec-type)</label>
-                  <select id="p-spec-type" onchange="syncCurrentProfile()">
-                    <option value="">По умолчанию (Auto / MTP)</option>
-                    <option value="draft-dflash">draft-dflash (DFlash / DFlash 2)</option>
-                    <option value="draft-mtp">draft-mtp (MTP Multi-Token)</option>
-                    <option value="draft-simple">draft-simple (Draft-модель)</option>
-                    <option value="draft-eagle3">draft-eagle3 (EAGLE-3)</option>
-                    <option value="draft-dspark">draft-dspark (D-Spark)</option>
-                    <option value="ngram-simple">ngram-simple (N-Gram lookup)</option>
-                    <option value="none">none (Отключить)</option>
-                  </select>
+            <div style="border: 1px solid var(--border); border-radius: 6px; padding: 10px; margin-top: 6px; margin-bottom: 8px; background: rgba(255, 255, 255, 0.02);">
+              <div style="font-weight: 600; font-size: 13px; margin-bottom: 8px; color: var(--accent);">⚡ Спекулятивное декодирование (Speculative Decoding)</div>
+              
+              <!-- 1. Model-based / MTP Draft -->
+              <div style="margin-bottom: 10px; padding-bottom: 8px; border-bottom: 1px solid rgba(255,255,255,0.06);">
+                <div style="font-weight: 600; font-size: 11px; color: var(--muted); margin-bottom: 6px; text-transform: uppercase; letter-spacing: 0.5px;">1. Нейросетевой драфт / MTP (Model Speculator)</div>
+                <div class="form-row">
+                  <div class="form-group" style="flex: 1.3;">
+                    <label>Метод драфта</label>
+                    <select id="p-spec-model" onchange="onSpecChange()">
+                      <option value="none">Отключен (Без модели-драфта)</option>
+                      <option value="draft-mtp">draft-mtp (Multi-Token Prediction / MTP)</option>
+                      <option value="draft-dflash">draft-dflash (DFlash / DFlash 2)</option>
+                      <option value="draft-simple">draft-simple (Draft-модель / Малая модель)</option>
+                      <option value="draft-eagle3">draft-eagle3 (EAGLE-3)</option>
+                      <option value="draft-dspark">draft-dspark (D-Spark)</option>
+                    </select>
+                  </div>
+                  <div class="form-group" style="flex: 0.7;">
+                    <label>Tokens (--spec-draft-n-max)</label>
+                    <input type="number" id="p-draft-n-max" onchange="syncCurrentProfile()" placeholder="2 (MTP) / 8" min="0" max="64" />
+                  </div>
+                  <div class="form-group" style="flex: 0.7;">
+                    <label>Draft GPU (--spec-draft-ngl)</label>
+                    <input type="number" id="p-draft-ngl" onchange="syncCurrentProfile()" placeholder="99" min="0" max="999" />
+                  </div>
                 </div>
-                <div class="form-group" style="flex: 0.8;">
-                  <label>Max Tokens (--spec-draft-n-max)</label>
-                  <input type="number" id="p-draft-n-max" onchange="syncCurrentProfile()" placeholder="8" min="0" max="64" />
-                </div>
-                <div class="form-group" style="flex: 0.8;">
-                  <label>GPU Layers (--spec-draft-ngl)</label>
-                  <input type="number" id="p-draft-ngl" onchange="syncCurrentProfile()" placeholder="99" min="0" max="999" />
+                <div class="form-group" style="margin-top: 4px;" id="p-draft-model-group">
+                  <label>Draft Model Override (путь к отдельному .gguf файлу драфта/MTP head, если не встроен в модель)</label>
+                  <input type="text" id="p-draft-model" onchange="syncCurrentProfile()" placeholder="/mnt/storage/ai-models/dflash/...-DFlash2-Q4_K_M.gguf" />
                 </div>
               </div>
-              <div class="form-group" style="margin-top: 4px;">
-                <label>Draft Model Override (путь к .gguf драфта/DFlash, если отличается от MTP модели)</label>
-                <input type="text" id="p-draft-model" onchange="syncCurrentProfile()" placeholder="/mnt/storage/ai-models/dflash/...-DFlash2-Q4_K_M.gguf" />
+
+              <!-- 2. Contextual N-Gram Lookup -->
+              <div>
+                <div style="font-weight: 600; font-size: 11px; color: var(--muted); margin-bottom: 6px; text-transform: uppercase; letter-spacing: 0.5px;">2. Контекстный N-Gram поиск (N-Gram Lookup)</div>
+                <div class="form-row" style="align-items: center;">
+                  <div class="form-group" style="flex: 1.3;">
+                    <label>N-Gram метод</label>
+                    <select id="p-spec-ngram" onchange="onSpecChange()">
+                      <option value="none">Отключен</option>
+                      <option value="ngram-simple">ngram-simple (Поиск повторяющихся паттернов из контекста)</option>
+                      <option value="ngram-map-k">ngram-map-k (Map-K хеш-таблица)</option>
+                      <option value="ngram-cache">ngram-cache (Кэшированный N-Gram)</option>
+                    </select>
+                  </div>
+                  <div style="flex: 1.4; font-size: 11px; color: var(--muted); padding-top: 14px;">
+                    💡 Работает автономно или параллельно с MTP. Не расходует VRAM GPU.
+                  </div>
+                </div>
               </div>
-              <label class="checkbox-group" style="margin-top: 4px;">
-                <input type="checkbox" id="p-mtp" onchange="syncCurrentProfile()" />
-                <span>Использовать MTP спекулятор модели по умолчанию (-md)</span>
-              </label>
             </div>
 
             <div class="form-row">
@@ -1040,11 +1058,36 @@
         document.getElementById('p-kv').value = cur.kv_type || 'q8_0';
         document.getElementById('p-fa').value = cur.flash_attn || 'auto';
         document.getElementById('p-np').value = cur.parallel || 1;
-        document.getElementById('p-spec-type').value = cur.spec_type || '';
+        const spec = cur.spec_type || '';
+        let modelSpec = 'none';
+        let ngramSpec = 'none';
+
+        if (spec === 'none') {
+          modelSpec = 'none';
+          ngramSpec = 'none';
+        } else {
+          const parts = spec.split(',').map(s => s.trim()).filter(Boolean);
+          for (const p of parts) {
+            if (p.startsWith('draft-')) modelSpec = p;
+            if (p.startsWith('ngram-')) ngramSpec = p;
+          }
+          if (parts.length === 0 && cur.use_mtp) {
+            modelSpec = 'draft-mtp';
+          }
+        }
+
+        const modelSelect = document.getElementById('p-spec-model');
+        if (modelSpec && !Array.from(modelSelect.options).some(o => o.value === modelSpec)) {
+          const opt = document.createElement('option');
+          opt.value = modelSpec;
+          opt.textContent = `${modelSpec} (Пользовательский)`;
+          modelSelect.appendChild(opt);
+        }
+        modelSelect.value = modelSpec;
+        document.getElementById('p-spec-ngram').value = ngramSpec;
         document.getElementById('p-draft-model').value = cur.draft_model_path || '';
         document.getElementById('p-draft-n-max').value = cur.draft_n_max || '';
         document.getElementById('p-draft-ngl').value = cur.draft_ngl || '';
-        document.getElementById('p-mtp').checked = cur.use_mtp !== false;
         document.getElementById('p-vision').checked = !!cur.use_vision;
         document.getElementById('p-ui').checked = cur.enable_ui !== false;
         document.getElementById('p-tools').value = cur.tools || 'safe';
@@ -1057,6 +1100,19 @@
       }
     }
 
+    function onSpecChange() {
+      const modelSpec = document.getElementById('p-spec-model').value;
+      const draftInput = document.getElementById('p-draft-n-max');
+      if (modelSpec === 'draft-mtp') {
+        if (!draftInput.value) draftInput.placeholder = '2';
+      } else if (modelSpec.includes('dflash')) {
+        if (!draftInput.value) draftInput.placeholder = '8';
+      } else {
+        if (!draftInput.value) draftInput.placeholder = '0';
+      }
+      syncCurrentProfile();
+    }
+
     function syncCurrentProfile() {
       const cur = editingProfiles[currentProfileIdx];
       if (!cur) return;
@@ -1067,11 +1123,18 @@
       cur.kv_type = document.getElementById('p-kv').value;
       cur.flash_attn = document.getElementById('p-fa').value;
       cur.parallel = parseInt(document.getElementById('p-np').value) || 1;
-      cur.spec_type = document.getElementById('p-spec-type').value;
+
+      const modelSpec = document.getElementById('p-spec-model').value;
+      const ngramSpec = document.getElementById('p-spec-ngram').value;
+      const activeSpecs = [];
+      if (modelSpec && modelSpec !== 'none') activeSpecs.push(modelSpec);
+      if (ngramSpec && ngramSpec !== 'none') activeSpecs.push(ngramSpec);
+
+      cur.spec_type = activeSpecs.length > 0 ? activeSpecs.join(',') : 'none';
+      cur.use_mtp = modelSpec === 'draft-mtp';
       cur.draft_model_path = document.getElementById('p-draft-model').value.trim();
       cur.draft_n_max = parseInt(document.getElementById('p-draft-n-max').value) || 0;
       cur.draft_ngl = parseInt(document.getElementById('p-draft-ngl').value) || 0;
-      cur.use_mtp = document.getElementById('p-mtp').checked;
       cur.use_vision = document.getElementById('p-vision').checked;
       cur.enable_ui = document.getElementById('p-ui').checked;
       cur.tools = document.getElementById('p-tools').value;

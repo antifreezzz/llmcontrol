@@ -361,8 +361,12 @@ func (s *Server) handleStartModel(w http.ResponseWriter, r *http.Request) {
 		Profile string `json:"profile"`
 	}
 	_ = json.NewDecoder(r.Body).Decode(&req)
+	profile := req.Profile
+	if profile == "" {
+		profile = r.URL.Query().Get("profile")
+	}
 
-	if err := s.supervisor.StartModel(r.Context(), id, req.Profile); err != nil {
+	if err := s.supervisor.StartModel(r.Context(), id, profile); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}

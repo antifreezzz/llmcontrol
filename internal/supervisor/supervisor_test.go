@@ -117,6 +117,67 @@ func TestBuildArgs(t *testing.T) {
 	if !strings.Contains(dfArgsStr, "--spec-draft-ngl 99") {
 		t.Errorf("missing --spec-draft-ngl flag: %s", dfArgsStr)
 	}
+
+	// Model with embedded MTP (MTPPath == ModelPath, e.g. KAT-Coder)
+	katModel := &db.Model{
+		ID:        "katcoder",
+		Name:      "KAT-Coder",
+		EngineID:  "llama-vk",
+		ModelPath: "/models/katcoder.gguf",
+		MTPPath:   "/models/katcoder.gguf", // same path
+	}
+	katMtpProf := &db.Profile{
+		ModelID:   "katcoder",
+		Name:      "mtp",
+		CtxSize:   8192,
+		UseMTP:    true,
+		DraftNMax: 2,
+	}
+	katArgs := sup.BuildArgs(katModel, katMtpProf, 8080)
+	katArgsStr := strings.Join(katArgs, " ")
+	if !strings.Contains(katArgsStr, "--spec-type draft-mtp") {
+		t.Errorf("expected '--spec-type draft-mtp', got: %s", katArgsStr)
+	}
+	if strings.Contains(katArgsStr, "-md") {
+		t.Errorf("embedded MTP must NOT include -md, got: %s", katArgsStr)
+	}
+	if !strings.Contains(katArgsStr, "--spec-draft-n-max 2") {
+		t.Errorf("expected '--spec-draft-n-max 2', got: %s", katArgsStr)
+	}
+
+	// N-Gram lookup with MTP flag set (should NOT pass -md)
+	ngramProf := &db.Profile{
+		ModelID:   "katcoder",
+		Name:      "ngram",
+		CtxSize:   8192,
+		SpecType:  "ngram-simple",
+		UseMTP:    true, // leftover flag from UI
+		DraftNMax: 12,
+	}
+	ngramArgs := sup.BuildArgs(katModel, ngramProf, 8080)
+	ngramArgsStr := strings.Join(ngramArgs, " ")
+	if !strings.Contains(ngramArgsStr, "--spec-type ngram-simple") {
+		t.Errorf("expected '--spec-type ngram-simple', got: %s", ngramArgsStr)
+	}
+	if strings.Contains(ngramArgsStr, "-md") {
+		t.Errorf("ngram-simple must NOT include -md, got: %s", ngramArgsStr)
+	}
+	if !strings.Contains(ngramArgsStr, "--spec-draft-n-max 12") {
+		t.Errorf("expected '--spec-draft-n-max 12', got: %s", ngramArgsStr)
+	}
+
+	// SpecType none
+	noneProf := &db.Profile{
+		ModelID:  "katcoder",
+		Name:     "none",
+		SpecType: "none",
+		UseMTP:   true,
+	}
+	noneArgs := sup.BuildArgs(katModel, noneProf, 8080)
+	noneArgsStr := strings.Join(noneArgs, " ")
+	if strings.Contains(noneArgsStr, "--spec-type") || strings.Contains(noneArgsStr, "-md") {
+		t.Errorf("spec-type none must NOT contain speculative flags, got: %s", noneArgsStr)
+	}
 }
 
 func TestBuildArgsParallelAlwaysExplicit(t *testing.T) {

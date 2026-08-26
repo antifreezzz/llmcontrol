@@ -136,26 +136,37 @@ func (s *Supervisor) BuildArgs(m *db.Model, p *db.Profile, port int) []string {
 		args = append(args, "--flash-attn", p.FlashAttn)
 	}
 	// Speculative decoding / draft model resolution
-	draftModel := ""
-	if p.DraftModelPath != "" {
-		draftModel = p.DraftModelPath
-	} else if p.UseMTP && m.MTPPath != "" {
-		draftModel = m.MTPPath
+	specType := p.SpecType
+	if specType == "" && p.UseMTP {
+		specType = "draft-mtp"
 	}
 
-	if p.SpecType != "" && p.SpecType != "none" {
-		args = append(args, "--spec-type", p.SpecType)
-	}
+	if specType != "" && specType != "none" {
+		draftModel := ""
+		hasDraftSpec := strings.Contains(specType, "draft-")
 
-	if draftModel != "" && p.SpecType != "none" {
-		args = append(args, "-md", draftModel)
+		if hasDraftSpec {
+			if p.DraftModelPath != "" && p.DraftModelPath != m.ModelPath {
+				draftModel = p.DraftModelPath
+			} else if strings.Contains(specType, "draft-mtp") && m.MTPPath != "" && m.MTPPath != m.ModelPath {
+				draftModel = m.MTPPath
+			}
+		}
+
+		args = append(args, "--spec-type", specType)
+
+		if draftModel != "" {
+			args = append(args, "-md", draftModel)
+			if p.DraftNGL > 0 {
+				args = append(args, "--spec-draft-ngl", strconv.Itoa(p.DraftNGL))
+			}
+		}
+
 		if p.DraftNMax > 0 {
 			args = append(args, "--spec-draft-n-max", strconv.Itoa(p.DraftNMax))
 		}
-		if p.DraftNGL > 0 {
-			args = append(args, "--spec-draft-ngl", strconv.Itoa(p.DraftNGL))
-		}
 	}
+
 	if p.UseVision && m.MMProjPath != "" {
 		args = append(args, "--mmproj", m.MMProjPath)
 	}
@@ -220,11 +231,14 @@ func (s *Supervisor) StartProcessOnly(ctx context.Context, modelID, profileName 
 
 	eng, err := s.db.GetEngine(ctx, model.EngineID)
 	homeDir, _ := os.UserHomeDir()
+	vkBin := filepath.Join(homeDir, "llama.cpp", "build-vk", "bin", "llama-server")
 	binPath := "llama-server"
-	if _, err := exec.LookPath("llama-server"); err != nil {
-		binPath = filepath.Join(homeDir, "llama.cpp", "build-vk", "bin", "llama-server")
+	if _, err := os.Stat(vkBin); err == nil {
+		binPath = vkBin
+	} else if _, err := exec.LookPath("llama-server"); err != nil {
+		binPath = vkBin
 	}
-	if eng != nil && eng.BinaryPath != "" {
+	if eng != nil && eng.BinaryPath != "" && eng.BinaryPath != "llama-server" {
 		binPath = eng.BinaryPath
 	}
 
