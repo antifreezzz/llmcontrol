@@ -117,6 +117,169 @@ func TestBuildArgs(t *testing.T) {
 	if !strings.Contains(dfArgsStr, "--spec-draft-ngl 99") {
 		t.Errorf("missing --spec-draft-ngl flag: %s", dfArgsStr)
 	}
+
+	// Model with embedded MTP (MTPPath == ModelPath, e.g. KAT-Coder)
+	katModel := &db.Model{
+		ID:        "katcoder",
+		Name:      "KAT-Coder",
+		EngineID:  "llama-vk",
+		ModelPath: "/models/katcoder.gguf",
+		MTPPath:   "/models/katcoder.gguf", // same path
+	}
+	katMtpProf := &db.Profile{
+		ModelID:   "katcoder",
+		Name:      "mtp",
+		CtxSize:   8192,
+		UseMTP:    true,
+		DraftNMax: 2,
+	}
+	katArgs := sup.BuildArgs(katModel, katMtpProf, 8080)
+	katArgsStr := strings.Join(katArgs, " ")
+	if !strings.Contains(katArgsStr, "--spec-type draft-mtp") {
+		t.Errorf("expected '--spec-type draft-mtp', got: %s", katArgsStr)
+	}
+	if strings.Contains(katArgsStr, "-md") {
+		t.Errorf("embedded MTP must NOT include -md, got: %s", katArgsStr)
+	}
+	if !strings.Contains(katArgsStr, "--spec-draft-n-max 2") {
+		t.Errorf("expected '--spec-draft-n-max 2', got: %s", katArgsStr)
+	}
+
+	// N-Gram lookup with MTP flag set (should NOT pass -md)
+	ngramProf := &db.Profile{
+		ModelID:   "katcoder",
+		Name:      "ngram",
+		CtxSize:   8192,
+		SpecType:  "ngram-simple",
+		UseMTP:    true, // leftover flag from UI
+		DraftNMax: 12,
+	}
+	ngramArgs := sup.BuildArgs(katModel, ngramProf, 8080)
+	ngramArgsStr := strings.Join(ngramArgs, " ")
+	if !strings.Contains(ngramArgsStr, "--spec-type ngram-simple") {
+		t.Errorf("expected '--spec-type ngram-simple', got: %s", ngramArgsStr)
+	}
+	if strings.Contains(ngramArgsStr, "-md") {
+		t.Errorf("ngram-simple must NOT include -md, got: %s", ngramArgsStr)
+	}
+	if !strings.Contains(ngramArgsStr, "--spec-draft-n-max 12") {
+		t.Errorf("expected '--spec-draft-n-max 12', got: %s", ngramArgsStr)
+	}
+
+	// SpecType none
+	noneProf := &db.Profile{
+		ModelID:  "katcoder",
+		Name:     "none",
+		SpecType: "none",
+		UseMTP:   true,
+	}
+	noneArgs := sup.BuildArgs(katModel, noneProf, 8080)
+	noneArgsStr := strings.Join(noneArgs, " ")
+	if strings.Contains(noneArgsStr, "--spec-type") || strings.Contains(noneArgsStr, "-md") {
+		t.Errorf("spec-type none must NOT contain speculative flags, got: %s", noneArgsStr)
+	}
+}
+
+func TestBuildArgsParallelAlwaysExplicit(t *testing.T) {
+	sup, _, _ := setupTestSupervisor(t)
+
+	model := &db.Model{
+		ID:        "m",
+		Name:      "M",
+		EngineID:  "llama-vk",
+		ModelPath: "/models/m.gguf",
+	}
+
+	// parallel=1 must still produce an explicit -np 1 (server default may differ)
+	p1 := &db.Profile{ModelID: "m", Name: "default", CtxSize: 4096, Parallel: 1}
+	args1 := strings.Join(sup.BuildArgs(model, p1, 8080), " ")
+	if !strings.Contains(args1, "-np 1") {
+		t.Errorf("expected explicit '-np 1' for parallel=1, got: %s", args1)
+	}
+
+	// parallel=2
+	p2 := &db.Profile{ModelID: "m", Name: "dual", CtxSize: 4096, Parallel: 2}
+	args2 := strings.Join(sup.BuildArgs(model, p2, 8080), " ")
+	if !strings.Contains(args2, "-np 2") {
+		t.Errorf("expected '-np 2' for parallel=2, got: %s", args2)
+	}
+
+	// zero value falls back to an explicit -np 1
+	p0 := &db.Profile{ModelID: "m", Name: "zero", CtxSize: 4096}
+	args0 := strings.Join(sup.BuildArgs(model, p0, 8080), " ")
+	if !strings.Contains(args0, "-np 1") {
+		t.Errorf("expected fallback '-np 1' for unset parallel, got: %s", args0)
+	}
+}
+
+func TestBuildArgsReasoningPreserveAndCacheReuse(t *testing.T) {
+	sup, _, _ := setupTestSupervisor(t)
+
+	model := &db.Model{
+		ID:        "ornith",
+		Name:      "Ornith 9B",
+		EngineID:  "llama-vk",
+		ModelPath: "/models/ornith.gguf",
+	}
+
+	on := &db.Profile{
+		ModelID:           "ornith",
+		Name:              "harness",
+		CtxSize:           65536,
+		Parallel:          2,
+		ReasoningFormat:   "deepseek",
+		PreserveReasoning: true,
+		CacheReuse:        256,
+	}
+	argsOn := strings.Join(sup.BuildArgs(model, on, 8080), " ")
+
+	if !strings.Contains(argsOn, "--reasoning-format deepseek") {
+		t.Errorf("missing reasoning format flag: %s", argsOn)
+	}
+	if !strings.Contains(argsOn, "--reasoning-preserve") {
+		t.Errorf("missing --reasoning-preserve flag: %s", argsOn)
+	}
+	if !strings.Contains(argsOn, "--cache-reuse 256") {
+		t.Errorf("missing '--cache-reuse 256' flag: %s", argsOn)
+	}
+
+	off := &db.Profile{
+		ModelID:  "ornith",
+		Name:     "plain",
+		CtxSize:  65536,
+		Parallel: 2,
+	}
+	argsOff := strings.Join(sup.BuildArgs(model, off, 8080), " ")
+
+	if strings.Contains(argsOff, "--reasoning-preserve") {
+		t.Errorf("--reasoning-preserve must be absent when disabled: %s", argsOff)
+	}
+	if strings.Contains(argsOff, "--cache-reuse") {
+		t.Errorf("--cache-reuse must be absent when cache_reuse=0: %s", argsOff)
+	}
+}
+
+func TestBuildArgsContextIsPerSlot(t *testing.T) {
+	sup, _, _ := setupTestSupervisor(t)
+
+	model := &db.Model{ID: "m", Name: "M", EngineID: "llama-vk", ModelPath: "/models/m.gguf"}
+
+	// With explicit -np the server treats -c as TOTAL context split across
+	// slots, so BuildArgs must scale it to keep per-request ctx intact.
+	dual := &db.Profile{ModelID: "m", Name: "dual", CtxSize: 65536, Parallel: 2}
+	argsDual := strings.Join(sup.BuildArgs(model, dual, 8080), " ")
+	if !strings.Contains(argsDual, "-c 131072") {
+		t.Errorf("expected '-c 131072' (ctx_size x parallel) for per-slot 64K, got: %s", argsDual)
+	}
+	if !strings.Contains(argsDual, "-np 2") {
+		t.Errorf("expected '-np 2', got: %s", argsDual)
+	}
+
+	single := &db.Profile{ModelID: "m", Name: "single", CtxSize: 65536, Parallel: 1}
+	argsSingle := strings.Join(sup.BuildArgs(model, single, 8080), " ")
+	if !strings.Contains(argsSingle, "-c 65536") {
+		t.Errorf("expected '-c 65536' for parallel=1, got: %s", argsSingle)
+	}
 }
 
 func TestBenchmarkRunner(t *testing.T) {

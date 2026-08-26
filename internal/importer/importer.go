@@ -185,9 +185,13 @@ func ParseScriptContent(filename, content string) (*ParsedModel, error) {
 	llamaBin := expandVars(vars["LLAMA_BIN"], vars)
 	if llamaBin == "" {
 		homeDir, _ := os.UserHomeDir()
-		llamaBin = "llama-server"
-		if _, err := exec.LookPath("llama-server"); err != nil {
-			llamaBin = filepath.Join(homeDir, "llama.cpp", "build-vk", "bin", "llama-server")
+		vkBin := filepath.Join(homeDir, "llama.cpp", "build-vk", "bin", "llama-server")
+		if _, err := os.Stat(vkBin); err == nil {
+			llamaBin = vkBin
+		} else if _, err := exec.LookPath("llama-server"); err != nil {
+			llamaBin = vkBin
+		} else {
+			llamaBin = "llama-server"
 		}
 	}
 

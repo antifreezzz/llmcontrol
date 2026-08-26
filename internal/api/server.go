@@ -1,12 +1,14 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io/fs"
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/antifreezzz/llmcontrol/internal/db"
 	"github.com/antifreezzz/llmcontrol/internal/supervisor"
@@ -20,12 +22,13 @@ type Server struct {
 }
 
 type StatusResponse struct {
-	Status      string                  `json:"status"` // 'running', 'idle'
-	ActiveModel string                  `json:"active_model,omitempty"`
-	Port        int                     `json:"port,omitempty"`
-	Profile     string                  `json:"profile,omitempty"`
-	TPS         float64                 `json:"tps,omitempty"`
-	System      supervisor.SystemStatus `json:"system"`
+	Status      string                     `json:"status"` // 'running', 'idle'
+	ActiveModel string                     `json:"active_model,omitempty"`
+	Port        int                        `json:"port,omitempty"`
+	Profile     string                     `json:"profile,omitempty"`
+	TPS         float64                    `json:"tps,omitempty"`
+	LLMMetrics  *supervisor.LLMSlotMetrics `json:"llm_metrics,omitempty"`
+	System      supervisor.SystemStatus    `json:"system"`
 }
 
 func NewServer(database *db.DB, sup *supervisor.Supervisor, staticFS fs.FS) *Server {
@@ -88,8 +91,7 @@ func (s *Server) registerRoutes() {
 	}
 }
 
-func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
-	ctx := r.Context()
+func (s *Server) buildStatusResponse(ctx context.Context) StatusResponse {
 	active, err := s.db.GetActiveRuntimeStates(ctx)
 	sysStat := supervisor.GetSystemStatus()
 
@@ -109,8 +111,22 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 		if latest != nil {
 			resp.TPS = latest.PredictedPerSecond
 		}
-	}
 
+		if act.Status == "running" && act.Port > 0 {
+			metrics := s.supervisor.GetSlotMetrics(ctx, act.Port)
+			if metrics != nil {
+				resp.LLMMetrics = metrics
+				if metrics.LiveTPS > 0 {
+					resp.TPS = metrics.LiveTPS
+				}
+			}
+		}
+	}
+	return resp
+}
+
+func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
+	resp := s.buildStatusResponse(r.Context())
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(resp)
 }
@@ -345,8 +361,12 @@ func (s *Server) handleStartModel(w http.ResponseWriter, r *http.Request) {
 		Profile string `json:"profile"`
 	}
 	_ = json.NewDecoder(r.Body).Decode(&req)
+	profile := req.Profile
+	if profile == "" {
+		profile = r.URL.Query().Get("profile")
+	}
 
-	if err := s.supervisor.StartModel(r.Context(), id, req.Profile); err != nil {
+	if err := s.supervisor.StartModel(r.Context(), id, profile); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -434,10 +454,28 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 	events := s.supervisor.SubscribeEvents()
 	defer s.supervisor.UnsubscribeEvents(events)
 
-	fmt.Fprintf(w, "data: connected\n\n")
-	flusher.Flush()
-
 	ctx := r.Context()
+
+	sendTelemetry := func() {
+		status := s.buildStatusResponse(ctx)
+		payload, err := json.Marshal(map[string]interface{}{
+			"type":   "telemetry",
+			"status": status,
+		})
+		if err == nil {
+			fmt.Fprintf(w, "data: %s\n\n", payload)
+			flusher.Flush()
+		}
+	}
+
+	// Send initial snapshot immediately upon connection
+	sendTelemetry()
+
+	ticker := time.NewTicker(250 * time.Millisecond)
+	defer ticker.Stop()
+
+	idleTickCount := 0
+
 	for {
 		select {
 		case <-ctx.Done():
@@ -446,8 +484,40 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 			if !ok {
 				return
 			}
-			fmt.Fprintf(w, "data: %s\n\n", ev)
+			evPayload, _ := json.Marshal(map[string]interface{}{
+				"type":  "event",
+				"event": ev,
+			})
+			fmt.Fprintf(w, "data: %s\n\n", evPayload)
 			flusher.Flush()
+			sendTelemetry()
+		case <-ticker.C:
+			status := s.buildStatusResponse(ctx)
+			isBusy := status.LLMMetrics != nil && (status.LLMMetrics.Phase == "prompt_eval" || status.LLMMetrics.Phase == "generating")
+			if isBusy {
+				idleTickCount = 0
+				payload, err := json.Marshal(map[string]interface{}{
+					"type":   "telemetry",
+					"status": status,
+				})
+				if err == nil {
+					fmt.Fprintf(w, "data: %s\n\n", payload)
+					flusher.Flush()
+				}
+			} else {
+				idleTickCount++
+				if idleTickCount >= 4 { // 4 * 250ms = 1.0s in idle
+					idleTickCount = 0
+					payload, err := json.Marshal(map[string]interface{}{
+						"type":   "telemetry",
+						"status": status,
+					})
+					if err == nil {
+						fmt.Fprintf(w, "data: %s\n\n", payload)
+						flusher.Flush()
+					}
+				}
+			}
 		}
 	}
 }

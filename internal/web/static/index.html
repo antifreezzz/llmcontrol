@@ -145,6 +145,63 @@
     .meta-item { display: flex; justify-content: space-between; }
     .meta-item b { color: var(--text); font-weight: 500; font-family: monospace; }
     
+    .slot-telemetry {
+      background: #09101f;
+      border: 1px solid #1a2a4a;
+      border-radius: 8px;
+      padding: 8px 12px;
+      font-size: 12px;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+    .slot-telemetry.telemetry-alert {
+      border-color: #ef4444;
+      background: #1c0d12;
+    }
+    .telemetry-row {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+    .telemetry-phase {
+      font-weight: 700;
+      text-transform: uppercase;
+      font-size: 11px;
+      padding: 2px 6px;
+      border-radius: 4px;
+      letter-spacing: 0.5px;
+    }
+    .telemetry-phase.prompt_eval {
+      background: rgba(245, 158, 11, 0.2);
+      color: #f59e0b;
+      border: 1px solid rgba(245, 158, 11, 0.4);
+    }
+    .telemetry-phase.generating {
+      background: rgba(16, 185, 129, 0.2);
+      color: #10b981;
+      border: 1px solid rgba(16, 185, 129, 0.4);
+    }
+    .telemetry-phase.idle {
+      background: rgba(148, 163, 184, 0.15);
+      color: #94a3b8;
+    }
+    .telemetry-meta {
+      display: flex;
+      justify-content: space-between;
+      color: var(--text-muted);
+    }
+    .telemetry-meta b {
+      color: var(--text);
+      font-family: monospace;
+    }
+    .telemetry-alert-text {
+      color: #ef4444;
+      font-size: 11px;
+      font-weight: 600;
+      line-height: 1.3;
+    }
+
     .controls {
       display: flex;
       flex-direction: column;
@@ -517,39 +574,57 @@
               </div>
             </div>
 
-            <div style="border: 1px solid var(--border); border-radius: 6px; padding: 8px 10px; margin-top: 6px; margin-bottom: 8px; background: rgba(255, 255, 255, 0.02);">
-              <div style="font-weight: 600; font-size: 12px; margin-bottom: 6px; color: var(--accent);">⚡ Спекулятивное декодирование (Speculative Decoding)</div>
-              <div class="form-row">
-                <div class="form-group" style="flex: 1.2;">
-                  <label>Метод (--spec-type)</label>
-                  <select id="p-spec-type" onchange="syncCurrentProfile()">
-                    <option value="">По умолчанию (Auto / MTP)</option>
-                    <option value="draft-dflash">draft-dflash (DFlash / DFlash 2)</option>
-                    <option value="draft-mtp">draft-mtp (MTP Multi-Token)</option>
-                    <option value="draft-simple">draft-simple (Draft-модель)</option>
-                    <option value="draft-eagle3">draft-eagle3 (EAGLE-3)</option>
-                    <option value="draft-dspark">draft-dspark (D-Spark)</option>
-                    <option value="ngram-simple">ngram-simple (N-Gram lookup)</option>
-                    <option value="none">none (Отключить)</option>
-                  </select>
+            <div style="border: 1px solid var(--border); border-radius: 6px; padding: 10px; margin-top: 6px; margin-bottom: 8px; background: rgba(255, 255, 255, 0.02);">
+              <div style="font-weight: 600; font-size: 13px; margin-bottom: 8px; color: var(--accent);">⚡ Спекулятивное декодирование (Speculative Decoding)</div>
+              
+              <!-- 1. Model-based / MTP Draft -->
+              <div style="margin-bottom: 10px; padding-bottom: 8px; border-bottom: 1px solid rgba(255,255,255,0.06);">
+                <div style="font-weight: 600; font-size: 11px; color: var(--muted); margin-bottom: 6px; text-transform: uppercase; letter-spacing: 0.5px;">1. Нейросетевой драфт / MTP (Model Speculator)</div>
+                <div class="form-row">
+                  <div class="form-group" style="flex: 1.3;">
+                    <label>Метод драфта</label>
+                    <select id="p-spec-model" onchange="onSpecChange()">
+                      <option value="none">Отключен (Без модели-драфта)</option>
+                      <option value="draft-mtp">draft-mtp (Multi-Token Prediction / MTP)</option>
+                      <option value="draft-dflash">draft-dflash (DFlash / DFlash 2)</option>
+                      <option value="draft-simple">draft-simple (Draft-модель / Малая модель)</option>
+                      <option value="draft-eagle3">draft-eagle3 (EAGLE-3)</option>
+                      <option value="draft-dspark">draft-dspark (D-Spark)</option>
+                    </select>
+                  </div>
+                  <div class="form-group" style="flex: 0.7;">
+                    <label>Tokens (--spec-draft-n-max)</label>
+                    <input type="number" id="p-draft-n-max" onchange="syncCurrentProfile()" placeholder="2 (MTP) / 8" min="0" max="64" />
+                  </div>
+                  <div class="form-group" style="flex: 0.7;">
+                    <label>Draft GPU (--spec-draft-ngl)</label>
+                    <input type="number" id="p-draft-ngl" onchange="syncCurrentProfile()" placeholder="99" min="0" max="999" />
+                  </div>
                 </div>
-                <div class="form-group" style="flex: 0.8;">
-                  <label>Max Tokens (--spec-draft-n-max)</label>
-                  <input type="number" id="p-draft-n-max" onchange="syncCurrentProfile()" placeholder="8" min="0" max="64" />
-                </div>
-                <div class="form-group" style="flex: 0.8;">
-                  <label>GPU Layers (--spec-draft-ngl)</label>
-                  <input type="number" id="p-draft-ngl" onchange="syncCurrentProfile()" placeholder="99" min="0" max="999" />
+                <div class="form-group" style="margin-top: 4px;" id="p-draft-model-group">
+                  <label>Draft Model Override (путь к отдельному .gguf файлу драфта/MTP head, если не встроен в модель)</label>
+                  <input type="text" id="p-draft-model" onchange="syncCurrentProfile()" placeholder="/mnt/storage/ai-models/dflash/...-DFlash2-Q4_K_M.gguf" />
                 </div>
               </div>
-              <div class="form-group" style="margin-top: 4px;">
-                <label>Draft Model Override (путь к .gguf драфта/DFlash, если отличается от MTP модели)</label>
-                <input type="text" id="p-draft-model" onchange="syncCurrentProfile()" placeholder="/mnt/storage/ai-models/dflash/...-DFlash2-Q4_K_M.gguf" />
+
+              <!-- 2. Contextual N-Gram Lookup -->
+              <div>
+                <div style="font-weight: 600; font-size: 11px; color: var(--muted); margin-bottom: 6px; text-transform: uppercase; letter-spacing: 0.5px;">2. Контекстный N-Gram поиск (N-Gram Lookup)</div>
+                <div class="form-row" style="align-items: center;">
+                  <div class="form-group" style="flex: 1.3;">
+                    <label>N-Gram метод</label>
+                    <select id="p-spec-ngram" onchange="onSpecChange()">
+                      <option value="none">Отключен</option>
+                      <option value="ngram-simple">ngram-simple (Поиск повторяющихся паттернов из контекста)</option>
+                      <option value="ngram-map-k">ngram-map-k (Map-K хеш-таблица)</option>
+                      <option value="ngram-cache">ngram-cache (Кэшированный N-Gram)</option>
+                    </select>
+                  </div>
+                  <div style="flex: 1.4; font-size: 11px; color: var(--muted); padding-top: 14px;">
+                    💡 Работает автономно или параллельно с MTP. Не расходует VRAM GPU.
+                  </div>
+                </div>
               </div>
-              <label class="checkbox-group" style="margin-top: 4px;">
-                <input type="checkbox" id="p-mtp" onchange="syncCurrentProfile()" />
-                <span>Использовать MTP спекулятор модели по умолчанию (-md)</span>
-              </label>
             </div>
 
             <div class="form-row">
@@ -570,6 +645,55 @@
                   <option value="all">all (Все инструменты)</option>
                   <option value="">none (Чистый API)</option>
                 </select>
+              </div>
+            </div>
+
+            <!-- Reasoning & Thinking Configuration -->
+            <div style="background: #0a1122; border: 1px solid #1e2c4f; border-radius: 8px; padding: 10px; margin-bottom: 10px;">
+              <div style="font-weight: 600; font-size: 13px; color: #38bdf8; margin-bottom: 8px; display: flex; align-items: center; gap: 6px;">
+                <span>🧠 Reasoning & Thinking Mode (Рассуждения и Кэш)</span>
+              </div>
+              <div class="form-row">
+                <div class="form-group">
+                  <label title="Режим генерации мыслей: auto - по шаблону модели, on - всегда думать, off - отключить размышления">
+                    Thinking Mode (--reasoning)
+                  </label>
+                  <select id="p-reasoning" onchange="syncCurrentProfile()">
+                    <option value="auto">auto (По умолчанию / шаблон)</option>
+                    <option value="on">on (Принудительно включить)</option>
+                    <option value="off">off (Отключить размышления)</option>
+                  </select>
+                </div>
+                <div class="form-group">
+                  <label title="Формат вывода think блоков. 'deepseek' отдаёт рассуждения в reasoning_content (OpenAI-совместимо). Для сохранения KV-кэша в multi-turn включайте Preserve Reasoning ниже">Reasoning Format (--reasoning-format)
+                  </label>
+                  <select id="p-reasoning-format" onchange="syncCurrentProfile()">
+                    <option value="auto">auto (Автоматически)</option>
+                    <option value="none">none (Сырой текст в content)</option>
+                    <option value="deepseek">deepseek (В reasoning_content — OpenAI)</option>
+                    <option value="deepseek-legacy">deepseek-legacy (В content + reasoning)</option>
+                  </select>
+                </div>
+                <div class="form-group" style="flex: 0.8;">
+                  <label title="Лимит токенов на рассуждения: -1 = без лимита, 0 = завершить блок сразу">
+                    Budget (--reasoning-budget)
+                  </label>
+                  <input type="number" id="p-reasoning-budget" onchange="syncCurrentProfile()" placeholder="-1" min="-1" />
+                </div>
+              </div>
+              <div class="form-row">
+                <div class="form-group" style="flex-direction: row; align-items: center; gap: 8px;">
+                  <input type="checkbox" id="p-preserve-reasoning" onchange="syncCurrentProfile()" style="width: auto;" />
+                  <label for="p-preserve-reasoning" style="margin: 0; cursor: pointer;" title="--reasoning-preserve: сервер сохраняет think-следы всей истории при рендере промпта. Без этого клиенты, не возвращающие reasoning_content, ломают кэш на каждом ходу">
+                    Preserve Reasoning (--reasoning-preserve) — защита KV-кэша
+                  </label>
+                </div>
+                <div class="form-group" style="flex: 0.6;">
+                  <label title="--cache-reuse N: минимальный размер куска (в токенах) для переиспользования KV через shift после расхождения префикса. 0 = выключено">
+                    Cache Reuse (--cache-reuse)
+                  </label>
+                  <input type="number" id="p-cache-reuse" onchange="syncCurrentProfile()" placeholder="0" min="0" step="32" />
+                </div>
               </div>
             </div>
 
@@ -603,6 +727,106 @@
     let editingProfiles = [];
     let currentProfileIdx = 0;
 
+    let lastStatus = null;
+
+    function applyStatus(statusRes) {
+      if (!statusRes) return;
+      lastStatus = statusRes;
+      if (statusRes.system) {
+        document.getElementById('ram-badge').innerText = `${statusRes.system.ram_used_mb} / ${statusRes.system.ram_total_mb} MB (${statusRes.system.ram_usage_pct.toFixed(0)}%)`;
+        if (statusRes.system.vram_total_mb > 0) {
+          document.getElementById('vram-badge').innerText = `${statusRes.system.vram_used_mb} / ${statusRes.system.vram_total_mb} MB (${statusRes.system.vram_usage_pct.toFixed(0)}%)`;
+        } else {
+          document.getElementById('vram-badge').innerText = `Shared / Vulkan`;
+        }
+      }
+
+      if (!allModels || allModels.length === 0) return;
+
+      allModels.forEach(m => {
+        const card = document.getElementById(`card-${m.id}`);
+        if (!card) return;
+        const pill = document.getElementById(`pill-${m.id}`);
+        const telemBox = document.getElementById(`telemetry-box-${m.id}`);
+        const profSelect = document.getElementById(`prof-${m.id}`);
+        const btnGroup = document.getElementById(`btngroup-${m.id}`);
+
+        const isThisActive = (statusRes.active_model === m.id);
+        const isRunning = isThisActive && (statusRes.status === 'running');
+        const isStarting = isThisActive && (statusRes.status === 'starting');
+
+        if (isRunning) {
+          if (!card.classList.contains('is-active')) card.classList.add('is-active');
+          if (pill && pill.innerText !== 'RUNNING') {
+            pill.className = 'status-pill status-running';
+            pill.innerText = 'RUNNING';
+          }
+          if (profSelect && !profSelect.disabled) profSelect.disabled = true;
+          if (btnGroup && !btnGroup.querySelector('.btn-danger')) {
+            btnGroup.innerHTML = `
+              <div class="btn-group running">
+                <button class="btn-danger" onclick="stopModel('${m.id}')">⏹ Stop</button>
+                <button onclick="benchModel('${m.id}')">🧪 Bench</button>
+                <button onclick="showLogs('${m.id}')">📜 Logs</button>
+              </div>
+            `;
+          }
+          if (telemBox && statusRes.llm_metrics) {
+            const met = statusRes.llm_metrics;
+            const phaseName = met.phase === 'prompt_eval' ? 'PROMPT EVAL (PP)' : (met.phase === 'generating' ? 'GENERATING (TG)' : 'IDLE');
+            const tpsVal = met.live_tps > 0 ? `${met.live_tps.toFixed(1)} t/s (live)` : (statusRes.tps ? `${statusRes.tps.toFixed(1)} t/s (bench)` : '-');
+            telemBox.innerHTML = `
+              <div class="slot-telemetry ${met.has_alert ? 'telemetry-alert' : ''}">
+                <div class="telemetry-row">
+                  <span class="telemetry-phase ${met.phase}">${phaseName}</span>
+                  <span class="telemetry-tps" style="font-family:monospace;font-weight:600;color:${met.phase==='generating'?'#10b981':'#f59e0b'}">${tpsVal}</span>
+                </div>
+                <div class="telemetry-meta">
+                  <span>Cache Hit: <b>${met.cache_hit_pct !== undefined ? met.cache_hit_pct.toFixed(1) + '%' : '-'}</b></span>
+                  <span>Prompt: <b>${met.prompt_tokens ? (met.prompt_tokens >= 1000 ? (met.prompt_tokens/1000).toFixed(1) + 'k' : met.prompt_tokens) : '0'}</b></span>
+                </div>
+                ${met.has_alert && met.alert ? `<div class="telemetry-alert-text">⚠️ ${met.alert}</div>` : ''}
+              </div>
+            `;
+          }
+        } else if (isStarting) {
+          if (card.classList.contains('is-active')) card.classList.remove('is-active');
+          if (pill && pill.innerText !== 'STARTING...') {
+            pill.className = 'status-pill status-starting';
+            pill.innerText = 'STARTING...';
+          }
+          if (profSelect && !profSelect.disabled) profSelect.disabled = true;
+          if (telemBox) telemBox.innerHTML = '';
+        } else {
+          if (card.classList.contains('is-active')) card.classList.remove('is-active');
+          if (pill && pill.innerText !== 'STOPPED') {
+            pill.className = 'status-pill status-stopped';
+            pill.innerText = 'STOPPED';
+          }
+          if (profSelect && profSelect.disabled) profSelect.disabled = false;
+          if (telemBox) telemBox.innerHTML = '';
+          if (btnGroup && !btnGroup.querySelector('.btn-primary')) {
+            btnGroup.innerHTML = `
+              <div class="btn-group">
+                <button class="btn-primary" onclick="startModel('${m.id}')">▶ Start</button>
+                <button onclick="showLogs('${m.id}')">📜 Logs</button>
+              </div>
+            `;
+          }
+        }
+      });
+    }
+
+    async function loadModels() {
+      try {
+        allModels = await fetch('/api/models').then(r => r.json());
+        renderModels(allModels);
+        if (lastStatus) applyStatus(lastStatus);
+      } catch (err) {
+        console.error("Failed to load models:", err);
+      }
+    }
+
     async function loadAll() {
       try {
         const [statusRes, modelsRes] = await Promise.all([
@@ -610,15 +834,8 @@
           fetch('/api/models').then(r => r.json())
         ]);
         allModels = modelsRes;
-
-        document.getElementById('ram-badge').innerText = `${statusRes.system.ram_used_mb} / ${statusRes.system.ram_total_mb} MB (${statusRes.system.ram_usage_pct.toFixed(0)}%)`;
-        if (statusRes.system.vram_total_mb > 0) {
-          document.getElementById('vram-badge').innerText = `${statusRes.system.vram_used_mb} / ${statusRes.system.vram_total_mb} MB (${statusRes.system.vram_usage_pct.toFixed(0)}%)`;
-        } else {
-          document.getElementById('vram-badge').innerText = `Shared / Vulkan`;
-        }
-
         renderModels(modelsRes);
+        applyStatus(statusRes);
       } catch (err) {
         console.error("Failed to load status/models:", err);
       }
@@ -635,6 +852,7 @@
         const statusText = isRunning ? 'RUNNING' : (isStarting ? 'STARTING...' : 'STOPPED');
 
         const card = document.createElement('div');
+        card.id = `card-${m.id}`;
         card.className = `card ${isRunning ? 'is-active' : ''}`;
         
         let buttonGroupHTML = '';
@@ -663,7 +881,7 @@
               <span class="card-engine">${m.engine_id}</span>
             </div>
             <div class="card-top-right">
-              <span class="status-pill ${statusClass}">${statusText}</span>
+              <span class="status-pill ${statusClass}" id="pill-${m.id}">${statusText}</span>
               <button class="card-action-icon" onclick="openEditModal('${m.id}')" title="Редактировать модель и профили">⚙️ Настройки</button>
               <button class="card-action-icon" onclick="deleteModel('${m.id}')" title="Удалить">🗑</button>
             </div>
@@ -673,10 +891,12 @@
 
           <div class="meta-grid">
             <div class="meta-item"><span>Port:</span> <b>${m.default_port}</b></div>
-            <div class="meta-item"><span>PID:</span> <b>${m.runtime ? m.runtime.pid || '-' : '-'}</b></div>
+            <div class="meta-item"><span>PID:</span> <b id="pid-${m.id}">${m.runtime ? m.runtime.pid || '-' : '-'}</b></div>
             <div class="meta-item"><span>MTP Spec:</span> <b>${m.mtp_path ? 'Yes' : 'No'}</b></div>
             <div class="meta-item"><span>Vision:</span> <b>${m.mmproj_path ? 'Yes' : 'No'}</b></div>
           </div>
+
+          <div id="telemetry-box-${m.id}"></div>
 
           <div class="controls">
             <div class="profile-select-wrapper">
@@ -684,7 +904,9 @@
                 ${(m.profiles || []).map(p => `<option value="${p.name}" ${p.name === (m.runtime?.profile_name || m.default_profile) ? 'selected' : ''}>Profile: ${p.name} (ctx ${p.ctx_size}, ${p.kv_type || 'q8_0'})</option>`).join('')}
               </select>
             </div>
-            ${buttonGroupHTML}
+            <div id="btngroup-${m.id}">
+              ${buttonGroupHTML}
+            </div>
           </div>
         `;
         grid.appendChild(card);
@@ -771,8 +993,8 @@
       document.getElementById('m-def-profile').value = 'default';
 
       editingProfiles = [
-        { name: 'default', description: 'Сбалансированный', ctx_size: 4096, kv_type: 'q8_0', flash_attn: 'auto', use_mtp: true, use_vision: false, enable_ui: true, tools: 'safe', parallel: 1 },
-        { name: 'fast', description: 'Макс скорость', ctx_size: 2048, kv_type: 'q4_0', flash_attn: 'on', use_mtp: true, use_vision: false, enable_ui: true, tools: 'safe', parallel: 1 }
+        { name: 'default', description: 'Сбалансированный', ctx_size: 4096, kv_type: 'q8_0', flash_attn: 'auto', use_mtp: true, use_vision: false, enable_ui: true, tools: 'safe', reasoning: 'auto', reasoning_format: 'auto', reasoning_budget: -1, preserve_reasoning: false, cache_reuse: 0, parallel: 1 },
+        { name: 'fast', description: 'Макс скорость', ctx_size: 2048, kv_type: 'q4_0', flash_attn: 'on', use_mtp: true, use_vision: false, enable_ui: true, tools: 'safe', reasoning: 'auto', reasoning_format: 'auto', reasoning_budget: -1, preserve_reasoning: false, cache_reuse: 0, parallel: 1 }
       ];
       currentProfileIdx = 0;
       document.getElementById('prof-count').innerText = editingProfiles.length;
@@ -836,16 +1058,59 @@
         document.getElementById('p-kv').value = cur.kv_type || 'q8_0';
         document.getElementById('p-fa').value = cur.flash_attn || 'auto';
         document.getElementById('p-np').value = cur.parallel || 1;
-        document.getElementById('p-spec-type').value = cur.spec_type || '';
+        const spec = cur.spec_type || '';
+        let modelSpec = 'none';
+        let ngramSpec = 'none';
+
+        if (spec === 'none') {
+          modelSpec = 'none';
+          ngramSpec = 'none';
+        } else {
+          const parts = spec.split(',').map(s => s.trim()).filter(Boolean);
+          for (const p of parts) {
+            if (p.startsWith('draft-')) modelSpec = p;
+            if (p.startsWith('ngram-')) ngramSpec = p;
+          }
+          if (parts.length === 0 && cur.use_mtp) {
+            modelSpec = 'draft-mtp';
+          }
+        }
+
+        const modelSelect = document.getElementById('p-spec-model');
+        if (modelSpec && !Array.from(modelSelect.options).some(o => o.value === modelSpec)) {
+          const opt = document.createElement('option');
+          opt.value = modelSpec;
+          opt.textContent = `${modelSpec} (Пользовательский)`;
+          modelSelect.appendChild(opt);
+        }
+        modelSelect.value = modelSpec;
+        document.getElementById('p-spec-ngram').value = ngramSpec;
         document.getElementById('p-draft-model').value = cur.draft_model_path || '';
         document.getElementById('p-draft-n-max').value = cur.draft_n_max || '';
         document.getElementById('p-draft-ngl').value = cur.draft_ngl || '';
-        document.getElementById('p-mtp').checked = cur.use_mtp !== false;
         document.getElementById('p-vision').checked = !!cur.use_vision;
         document.getElementById('p-ui').checked = cur.enable_ui !== false;
         document.getElementById('p-tools').value = cur.tools || 'safe';
+        document.getElementById('p-reasoning').value = cur.reasoning || 'auto';
+        document.getElementById('p-reasoning-format').value = cur.reasoning_format || 'auto';
+        document.getElementById('p-reasoning-budget').value = (cur.reasoning_budget !== undefined) ? cur.reasoning_budget : -1;
+        document.getElementById('p-preserve-reasoning').checked = !!cur.preserve_reasoning;
+        document.getElementById('p-cache-reuse').value = cur.cache_reuse || 0;
         document.getElementById('p-extra').value = cur.extra_args || '';
       }
+    }
+
+    function onSpecChange() {
+      const modelSpec = document.getElementById('p-spec-model').value;
+      const draftInput = document.getElementById('p-draft-n-max');
+      if (modelSpec === 'draft-mtp') {
+        if (!draftInput.value) draftInput.placeholder = '2';
+      } else if (modelSpec.includes('dflash')) {
+        if (!draftInput.value) draftInput.placeholder = '8';
+      } else {
+        if (!draftInput.value) draftInput.placeholder = '0';
+      }
+      syncCurrentProfile();
     }
 
     function syncCurrentProfile() {
@@ -858,14 +1123,28 @@
       cur.kv_type = document.getElementById('p-kv').value;
       cur.flash_attn = document.getElementById('p-fa').value;
       cur.parallel = parseInt(document.getElementById('p-np').value) || 1;
-      cur.spec_type = document.getElementById('p-spec-type').value;
+
+      const modelSpec = document.getElementById('p-spec-model').value;
+      const ngramSpec = document.getElementById('p-spec-ngram').value;
+      const activeSpecs = [];
+      if (modelSpec && modelSpec !== 'none') activeSpecs.push(modelSpec);
+      if (ngramSpec && ngramSpec !== 'none') activeSpecs.push(ngramSpec);
+
+      cur.spec_type = activeSpecs.length > 0 ? activeSpecs.join(',') : 'none';
+      cur.use_mtp = modelSpec === 'draft-mtp';
       cur.draft_model_path = document.getElementById('p-draft-model').value.trim();
       cur.draft_n_max = parseInt(document.getElementById('p-draft-n-max').value) || 0;
       cur.draft_ngl = parseInt(document.getElementById('p-draft-ngl').value) || 0;
-      cur.use_mtp = document.getElementById('p-mtp').checked;
       cur.use_vision = document.getElementById('p-vision').checked;
       cur.enable_ui = document.getElementById('p-ui').checked;
       cur.tools = document.getElementById('p-tools').value;
+      cur.reasoning = document.getElementById('p-reasoning').value;
+      cur.reasoning_format = document.getElementById('p-reasoning-format').value;
+      const budgetVal = parseInt(document.getElementById('p-reasoning-budget').value);
+      cur.reasoning_budget = isNaN(budgetVal) ? -1 : budgetVal;
+      cur.preserve_reasoning = document.getElementById('p-preserve-reasoning').checked;
+      const reuseVal = parseInt(document.getElementById('p-cache-reuse').value);
+      cur.cache_reuse = isNaN(reuseVal) ? 0 : Math.max(0, reuseVal);
       cur.extra_args = document.getElementById('p-extra').value.trim();
     }
 
@@ -890,7 +1169,12 @@
         use_mtp: true,
         use_vision: false,
         enable_ui: true,
-        tools: 'safe'
+        tools: 'safe',
+        reasoning: 'auto',
+        reasoning_format: 'auto',
+        reasoning_budget: -1,
+        preserve_reasoning: false,
+        cache_reuse: 0
       });
       currentProfileIdx = editingProfiles.length - 1;
       renderProfilesManager();
@@ -994,15 +1278,23 @@
       loadAll();
     }
 
-    // SSE events for realtime updates
+    // SSE events for zero-polling realtime updates
     const evtSource = new EventSource('/api/events');
-    evtSource.onmessage = () => {
-      loadAll();
-      if (activeLogModel) refreshLogs();
+    evtSource.onmessage = (e) => {
+      try {
+        const data = JSON.parse(e.data);
+        if (data.type === 'telemetry' && data.status) {
+          applyStatus(data.status);
+        } else if (data.type === 'event') {
+          loadModels();
+          if (activeLogModel) refreshLogs();
+        }
+      } catch (_) {
+        loadAll();
+      }
     };
 
     loadAll();
-    setInterval(loadAll, 5000);
   </script>
 </body>
 </html>
