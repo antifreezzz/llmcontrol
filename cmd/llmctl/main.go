@@ -10,6 +10,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"syscall"
 	"text/tabwriter"
 	"time"
@@ -17,6 +18,7 @@ import (
 	"github.com/antifreezzz/llmcontrol/internal/api"
 	"github.com/antifreezzz/llmcontrol/internal/config"
 	"github.com/antifreezzz/llmcontrol/internal/db"
+	"github.com/antifreezzz/llmcontrol/internal/downloader"
 	"github.com/antifreezzz/llmcontrol/internal/importer"
 	"github.com/antifreezzz/llmcontrol/internal/mcp"
 	"github.com/antifreezzz/llmcontrol/internal/supervisor"
@@ -273,6 +275,98 @@ func main() {
 		}
 		fmt.Println(logs)
 
+	case "pull", "download":
+		if len(filteredArgs) < 2 {
+			fmt.Println("Usage: llmctl pull <repo_id> [quant_or_filename]")
+			fmt.Println("Example: llmctl pull LiquidAI/LFM2.5-2.6B-GGUF Q4_K_M")
+			os.Exit(1)
+		}
+		repoID := filteredArgs[1]
+		quantOrFile := ""
+		if len(filteredArgs) >= 3 {
+			quantOrFile = filteredArgs[2]
+		}
+		dlMgr := downloader.NewManager(cfg.ModelsDir, database)
+		fmt.Printf("🔍 Inspecting Hugging Face repository: %s ...\n", repoID)
+		info, err := dlMgr.InspectRepo(ctx, repoID)
+		if err != nil {
+			fmt.Printf("❌ Inspection failed: %v\n", err)
+			os.Exit(1)
+		}
+		if len(info.Files) == 0 {
+			fmt.Println("❌ No GGUF files found in repository.")
+			os.Exit(1)
+		}
+
+		var chosenFile *downloader.HuggingFaceFile
+		if quantOrFile != "" {
+			for _, f := range info.Files {
+				if strings.EqualFold(f.Quant, quantOrFile) || strings.EqualFold(f.Filename, quantOrFile) || strings.Contains(strings.ToLower(f.Filename), strings.ToLower(quantOrFile)) {
+					chosenFile = &f
+					break
+				}
+			}
+		}
+		if chosenFile == nil {
+			for _, f := range info.Files {
+				if !f.IsMMProj && !f.IsMTP {
+					if strings.Contains(f.Quant, "Q4_K_M") || strings.Contains(f.Quant, "Q4_0") || strings.Contains(f.Quant, "Q8_0") {
+						chosenFile = &f
+						break
+					}
+				}
+			}
+			if chosenFile == nil && len(info.Files) > 0 {
+				chosenFile = &info.Files[0]
+			}
+		}
+
+		fmt.Printf("📥 File: %s (%s, %s)\n", chosenFile.Filename, chosenFile.Quant, chosenFile.SizeStr)
+		fmt.Printf("📁 Path: %s\n", filepath.Join(dlMgr.GetModelsDir(), repoID, chosenFile.Filename))
+
+		job, err := dlMgr.StartDownload(repoID, chosenFile.Filename, true, "")
+		if err != nil {
+			fmt.Printf("❌ Failed to start download: %v\n", err)
+			os.Exit(1)
+		}
+
+		for {
+			time.Sleep(400 * time.Millisecond)
+			if job.Status == downloader.StatusCompleted {
+				fmt.Printf("\r\033[K✅ Download complete! [100.0%%] %s (%s)\n", chosenFile.Filename, downloader.FormatBytes(job.TotalBytes))
+				fmt.Println("🎉 Model automatically registered in database with standard inference profiles.")
+				break
+			}
+			if job.Status == downloader.StatusFailed {
+				fmt.Printf("\r\033[K❌ Download failed: %s\n", job.Error)
+				os.Exit(1)
+			}
+			if job.Status == downloader.StatusCancelled {
+				fmt.Printf("\r\033[K⚠️ Download cancelled.\n")
+				os.Exit(1)
+			}
+			fmt.Printf("\r\033[K⏳ Downloading: %5.1f%% | %s / %s | %s",
+				job.ProgressPct,
+				downloader.FormatBytes(job.DownloadedBytes),
+				downloader.FormatBytes(job.TotalBytes),
+				job.SpeedStr,
+			)
+		}
+
+	case "downloads":
+		dlMgr := downloader.NewManager(cfg.ModelsDir, database)
+		jobs := dlMgr.ListJobs()
+		if len(jobs) == 0 {
+			fmt.Println("No active or recent downloads.")
+			return
+		}
+		w := tabwriter.NewWriter(os.Stdout, 0, 0, 3, ' ', 0)
+		fmt.Fprintln(w, "STATUS\tREPO\tFILE\tPROGRESS\tSPEED")
+		for _, j := range jobs {
+			fmt.Fprintf(w, "%s\t%s\t%s\t%.1f%%\t%s\n", j.Status, j.RepoID, j.Filename, j.ProgressPct, j.SpeedStr)
+		}
+		w.Flush()
+
 	default:
 		printUsage()
 	}
@@ -281,12 +375,14 @@ func main() {
 func runDaemon(cfg config.Config, database *db.DB, sup *supervisor.Supervisor) {
 	fmt.Println("🚀 Starting LLM Control Center Daemon...")
 	fmt.Printf("📁 Database: %s\n", cfg.DBPath)
+	fmt.Printf("📁 Models Dir: %s\n", cfg.ModelsDir)
 	fmt.Printf("🌐 Web & REST API: http://%s:%d\n", cfg.HTTPHost, cfg.HTTPPort)
 
 	// Re-attach to any llama-server processes that survived a previous daemon shutdown
 	sup.ReattachRunning(context.Background())
 
-	srv := api.NewServer(database, sup, web.StaticFS())
+	dlMgr := downloader.NewManager(cfg.ModelsDir, database)
+	srv := api.NewServer(database, sup, dlMgr, web.StaticFS())
 	httpServer := &http.Server{
 		Addr:    fmt.Sprintf("%s:%d", cfg.HTTPHost, cfg.HTTPPort),
 		Handler: srv.Router(),
@@ -336,6 +432,7 @@ Commands:
   list, ps             List all models, runtime statuses, memory & speeds
   start <model>        Start a model (optional: --profile <name>)
   stop <model|--all>   Stop a running model or all models
+  pull <repo> [quant]  Download GGUF model from Hugging Face & auto-register
   bench <model>        Run benchmark and calculate tok/s
   logs <model>         Show last log lines for a model (optional: -n <lines>)
   mcp                  Start Model Context Protocol (MCP) stdio server for AI assistants

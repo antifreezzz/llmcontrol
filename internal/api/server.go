@@ -11,12 +11,14 @@ import (
 	"time"
 
 	"github.com/antifreezzz/llmcontrol/internal/db"
+	"github.com/antifreezzz/llmcontrol/internal/downloader"
 	"github.com/antifreezzz/llmcontrol/internal/supervisor"
 )
 
 type Server struct {
 	db         *db.DB
 	supervisor *supervisor.Supervisor
+	downloader *downloader.Manager
 	staticFS   fs.FS
 	mux        *http.ServeMux
 }
@@ -31,10 +33,14 @@ type StatusResponse struct {
 	System      supervisor.SystemStatus    `json:"system"`
 }
 
-func NewServer(database *db.DB, sup *supervisor.Supervisor, staticFS fs.FS) *Server {
+func NewServer(database *db.DB, sup *supervisor.Supervisor, dl *downloader.Manager, staticFS fs.FS) *Server {
+	if dl == nil {
+		dl = downloader.NewManager("", database)
+	}
 	s := &Server{
 		db:         database,
 		supervisor: sup,
+		downloader: dl,
 		staticFS:   staticFS,
 		mux:        http.NewServeMux(),
 	}
@@ -77,6 +83,12 @@ func (s *Server) registerRoutes() {
 	s.mux.HandleFunc("POST /api/models/{id}/favorite", s.handleToggleFavorite)
 	s.mux.HandleFunc("POST /api/models/stop-all", s.handleStopAll)
 	s.mux.HandleFunc("GET /api/events", s.handleEvents)
+
+	// Downloader routes
+	s.mux.HandleFunc("GET /api/downloader/inspect", s.handleDownloaderInspect)
+	s.mux.HandleFunc("POST /api/downloader/start", s.handleDownloaderStart)
+	s.mux.HandleFunc("GET /api/downloader/jobs", s.handleDownloaderJobs)
+	s.mux.HandleFunc("POST /api/downloader/jobs/{id}/cancel", s.handleDownloaderCancel)
 
 	// Web static files
 	if s.staticFS != nil {
@@ -531,3 +543,59 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 }
+
+func (s *Server) handleDownloaderInspect(w http.ResponseWriter, r *http.Request) {
+	repo := r.URL.Query().Get("repo")
+	if repo == "" {
+		http.Error(w, `{"error": "repo parameter is required"}`, http.StatusBadRequest)
+		return
+	}
+	info, err := s.downloader.InspectRepo(r.Context(), repo)
+	if err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(info)
+}
+
+func (s *Server) handleDownloaderStart(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		RepoID       string `json:"repo_id"`
+		Filename     string `json:"filename"`
+		AutoRegister bool   `json:"auto_register"`
+		ModelID      string `json:"model_id"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, `{"error": "invalid json"}`, http.StatusBadRequest)
+		return
+	}
+	job, err := s.downloader.StartDownload(req.RepoID, req.Filename, req.AutoRegister, req.ModelID)
+	if err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(job)
+}
+
+func (s *Server) handleDownloaderJobs(w http.ResponseWriter, r *http.Request) {
+	jobs := s.downloader.ListJobs()
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(jobs)
+}
+
+func (s *Server) handleDownloaderCancel(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if err := s.downloader.CancelJob(id); err != nil {
+		http.Error(w, `{"error": "job not found"}`, http.StatusNotFound)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]string{"status": "cancelled"})
+}
+

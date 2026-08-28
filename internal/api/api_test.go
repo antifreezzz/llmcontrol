@@ -40,7 +40,7 @@ func setupTestAPI(t *testing.T) (*Server, *db.DB, *supervisor.Supervisor) {
 		ExclusiveMode: true,
 	})
 
-	srv := NewServer(database, sup, nil)
+	srv := NewServer(database, sup, nil, nil)
 	return srv, database, sup
 }
 

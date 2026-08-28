@@ -308,12 +308,14 @@
       align-items: center;
       padding: 16px 22px;
       border-bottom: 1px solid var(--card-border);
+      flex-shrink: 0;
     }
     .modal-tabs {
       display: flex;
       background: #0d1322;
       border-bottom: 1px solid var(--card-border);
       padding: 0 16px;
+      flex-shrink: 0;
     }
     .tab-btn {
       background: none;
@@ -333,6 +335,8 @@
     .modal-body {
       padding: 20px 24px;
       overflow-y: auto;
+      min-height: 0;
+      flex: 1;
       display: flex;
       flex-direction: column;
       gap: 14px;
@@ -343,6 +347,10 @@
       align-items: center;
       padding: 14px 22px;
       border-top: 1px solid var(--card-border);
+      background: var(--card-bg);
+      border-bottom-left-radius: 14px;
+      border-bottom-right-radius: 14px;
+      flex-shrink: 0;
     }
     .form-group {
       display: flex;
@@ -436,11 +444,14 @@
     <div class="system-badges">
       <div class="badge">🧠 RAM: <span id="ram-badge" class="badge-val">--</span></div>
       <div class="badge">🎮 VRAM: <span id="vram-badge" class="badge-val">--</span></div>
+      <button class="btn-primary" onclick="openDownloaderModal()">📥 HuggingFace</button>
       <button class="btn-success" onclick="openAddModal()">➕ Add Model</button>
       <button class="btn-danger" onclick="stopAll()">⏹ Stop All</button>
       <button onclick="loadAll()">🔄 Refresh</button>
     </div>
   </header>
+
+  <div id="downloads-bar" style="display:none; margin-bottom: 16px; background: #0c192c; border: 1px solid #1e3a8a; border-radius: 10px; padding: 12px 18px;"></div>
 
   <div class="grid" id="models-grid"></div>
 
@@ -625,6 +636,7 @@
                   </div>
                 </div>
               </div>
+            </div>
             <div class="form-row">
               <label class="checkbox-group">
                 <input type="checkbox" id="p-lan" onchange="syncCurrentProfile()" />
@@ -720,6 +732,73 @@
           <button onclick="closeModal()">Отмена</button>
           <button class="btn-primary" onclick="saveModelForm()">💾 Сохранить всё</button>
         </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal for Hugging Face Downloader -->
+  <div class="modal-backdrop" id="downloader-modal">
+    <div class="modal" style="max-width: 840px;">
+      <div class="modal-header">
+        <h2 style="font-size: 17px; font-weight: 700; display: flex; align-items: center; gap: 8px;">
+          <span>📥 Загрузка GGUF с Hugging Face Hub</span>
+        </h2>
+        <button class="card-action-icon" onclick="closeDownloaderModal()">✕</button>
+      </div>
+
+      <div class="modal-body" style="gap: 16px;">
+        <div style="display: flex; gap: 10px;">
+          <input type="text" id="hf-repo-input" placeholder="Например: LiquidAI/LFM2.5-2.6B-GGUF или Qwen/Qwen2.5-Coder-7B-Instruct-GGUF" style="flex: 1; font-size: 13px;" onkeydown="if(event.key==='Enter') inspectHFRepo()" />
+          <button class="btn-primary" id="btn-inspect-hf" onclick="inspectHFRepo()" style="padding: 0 16px;">🔍 Найти файлы</button>
+        </div>
+
+        <div style="display: flex; gap: 8px; flex-wrap: wrap; font-size: 12px; color: var(--text-muted); align-items: center;">
+          <span style="font-weight: 600;">Популярные:</span>
+          <a href="#" style="color: var(--primary); text-decoration: none;" onclick="setHFRepo('LiquidAI/LFM2.5-2.6B-GGUF'); return false;">LiquidAI/LFM2.5-2.6B-GGUF</a>
+          <span>•</span>
+          <a href="#" style="color: var(--primary); text-decoration: none;" onclick="setHFRepo('bloomer010/Ling-3.0-tiny-GGUF'); return false;">bloomer010/Ling-3.0-tiny-GGUF</a>
+          <span>•</span>
+          <a href="#" style="color: var(--primary); text-decoration: none;" onclick="setHFRepo('JetBrains/Mellum2-12B-A2.5B-Thinking-GGUF-MXFP4_MOE'); return false;">JetBrains/Mellum2</a>
+          <span>•</span>
+          <a href="#" style="color: var(--primary); text-decoration: none;" onclick="setHFRepo('unsloth/DeepSeek-R1-Distill-Qwen-14B-GGUF'); return false;">DeepSeek-R1-14B</a>
+        </div>
+
+        <div id="hf-status-msg" style="display: none; padding: 10px 14px; border-radius: 6px; font-size: 13px;"></div>
+
+        <!-- Files List Table -->
+        <div id="hf-files-container" style="display: none;">
+          <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
+            <div style="font-weight: 600; font-size: 13px; color: var(--text);">Доступные файлы в репозитории:</div>
+            <label class="checkbox-group" style="font-size: 12px;">
+              <input type="checkbox" id="hf-auto-register" checked />
+              <span>Авто-регистрация в llmcontrol</span>
+            </label>
+          </div>
+          <div style="max-height: 280px; overflow-y: auto; border: 1px solid var(--card-border); border-radius: 8px;">
+            <table style="width: 100%; border-collapse: collapse; font-size: 12px; text-align: left;">
+              <thead>
+                <tr style="background: #0d1322; border-bottom: 1px solid var(--card-border);">
+                  <th style="padding: 8px 12px;">Файл</th>
+                  <th style="padding: 8px 12px; width: 120px;">Квант</th>
+                  <th style="padding: 8px 12px; width: 100px;">Размер</th>
+                  <th style="padding: 8px 12px; width: 120px; text-align: right;">Действие</th>
+                </tr>
+              </thead>
+              <tbody id="hf-files-tbody"></tbody>
+            </table>
+          </div>
+        </div>
+
+        <!-- Active Jobs in Modal -->
+        <div id="hf-jobs-container" style="display: none; margin-top: 10px;">
+          <div style="font-weight: 600; font-size: 13px; margin-bottom: 8px; color: var(--accent);">⚡ Активные загрузки:</div>
+          <div id="hf-jobs-list" style="display: flex; flex-direction: column; gap: 8px;"></div>
+        </div>
+      </div>
+
+      <div class="modal-footer">
+        <div style="font-size: 12px; color: var(--text-muted);">Файлы сохраняются в каталог моделей и готовы к запуску.</div>
+        <button onclick="closeDownloaderModal()">Закрыть</button>
       </div>
     </div>
   </div>
@@ -1320,7 +1399,216 @@
       }
     };
 
+    // Hugging Face Downloader Logic
+    function setHFRepo(repo) {
+      document.getElementById('hf-repo-input').value = repo;
+      inspectHFRepo();
+    }
+
+    function openDownloaderModal() {
+      document.getElementById('downloader-modal').classList.add('open');
+      loadDownloadJobs();
+    }
+
+    function closeDownloaderModal() {
+      document.getElementById('downloader-modal').classList.remove('open');
+    }
+
+    async function inspectHFRepo() {
+      const repo = document.getElementById('hf-repo-input').value.trim();
+      if (!repo) return;
+      const statusMsg = document.getElementById('hf-status-msg');
+      const filesContainer = document.getElementById('hf-files-container');
+      const btn = document.getElementById('btn-inspect-hf');
+
+      statusMsg.style.display = 'block';
+      statusMsg.style.background = 'rgba(59, 130, 246, 0.1)';
+      statusMsg.style.color = '#38bdf8';
+      statusMsg.innerText = `🔍 Опрос Hugging Face Hub для "${repo}"...`;
+      btn.disabled = true;
+
+      try {
+        const res = await fetch(`/api/downloader/inspect?repo=${encodeURIComponent(repo)}`);
+        const data = await res.json();
+        if (!res.ok) {
+          statusMsg.style.background = 'rgba(239, 68, 68, 0.1)';
+          statusMsg.style.color = '#f87171';
+          statusMsg.innerText = `❌ Ошибка: ${data.error || 'Не удалось получить информацию'}`;
+          filesContainer.style.display = 'none';
+          return;
+        }
+
+        if (!data.files || data.files.length === 0) {
+          statusMsg.style.background = 'rgba(234, 179, 8, 0.1)';
+          statusMsg.style.color = '#facc15';
+          statusMsg.innerText = `⚠️ В репозитории не найдено .gguf файлов.`;
+          filesContainer.style.display = 'none';
+          return;
+        }
+
+        statusMsg.style.display = 'none';
+        filesContainer.style.display = 'block';
+
+        const tbody = document.getElementById('hf-files-tbody');
+        tbody.innerHTML = '';
+        data.files.forEach(f => {
+          const tr = document.createElement('tr');
+          tr.style.borderBottom = '1px solid rgba(255,255,255,0.05)';
+
+          let badgeColor = '#38bdf8';
+          let typeBadge = '';
+          if (f.is_mmproj) {
+            badgeColor = '#c084fc';
+            typeBadge = '<span style="font-size:10px; background:#581c87; color:#e9d5ff; padding:1px 5px; border-radius:3px; margin-left:6px;">Vision mmproj</span>';
+          } else if (f.is_mtp) {
+            badgeColor = '#f59e0b';
+            typeBadge = '<span style="font-size:10px; background:#78350f; color:#fde68a; padding:1px 5px; border-radius:3px; margin-left:6px;">Draft / MTP</span>';
+          }
+
+          tr.innerHTML = `
+            <td style="padding: 8px 12px; word-break: break-all;">
+              <div style="font-weight: 500;">${f.filename} ${typeBadge}</div>
+            </td>
+            <td style="padding: 8px 12px;">
+              <span style="background: rgba(255,255,255,0.08); color: ${badgeColor}; padding: 2px 6px; border-radius: 4px; font-weight: 600; font-size: 11px;">${f.quant}</span>
+            </td>
+            <td style="padding: 8px 12px; color: var(--text-muted); font-size: 11px;">
+              ${f.size_str}
+            </td>
+            <td style="padding: 8px 12px; text-align: right;">
+              <button class="btn-primary" style="font-size: 11px; padding: 4px 10px;" onclick="startHFDownload('${repo}', '${f.filename}')">📥 Скачать</button>
+            </td>
+          `;
+          tbody.appendChild(tr);
+        });
+      } catch (err) {
+        statusMsg.style.background = 'rgba(239, 68, 68, 0.1)';
+        statusMsg.style.color = '#f87171';
+        statusMsg.innerText = `❌ Ошибка сети: ${err.message}`;
+        filesContainer.style.display = 'none';
+      } finally {
+        btn.disabled = false;
+      }
+    }
+
+    async function startHFDownload(repo, filename) {
+      const autoRegister = document.getElementById('hf-auto-register').checked;
+      try {
+        const res = await fetch('/api/downloader/start', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            repo_id: repo,
+            filename: filename,
+            auto_register: autoRegister
+          })
+        });
+        if (!res.ok) {
+          const data = await res.json();
+          alert(`Ошибка запуска: ${data.error}`);
+          return;
+        }
+        loadDownloadJobs();
+      } catch (err) {
+        alert(`Ошибка сети: ${err.message}`);
+      }
+    }
+
+    async function loadDownloadJobs() {
+      try {
+        const res = await fetch('/api/downloader/jobs');
+        if (!res.ok) return;
+        const jobs = await res.json();
+        renderDownloadJobs(jobs);
+      } catch (err) {}
+    }
+
+    function renderDownloadJobs(jobs) {
+      const modalContainer = document.getElementById('hf-jobs-container');
+      const modalList = document.getElementById('hf-jobs-list');
+      const topBar = document.getElementById('downloads-bar');
+
+      if (!jobs || jobs.length === 0) {
+        if (modalContainer) modalContainer.style.display = 'none';
+        if (topBar) topBar.style.display = 'none';
+        return;
+      }
+
+      const activeJobs = jobs.filter(j => j.status === 'downloading' || j.status === 'pending');
+
+      if (topBar) {
+        if (activeJobs.length > 0) {
+          topBar.style.display = 'block';
+          topBar.innerHTML = activeJobs.map(j => `
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; font-size: 13px;">
+              <div>
+                <strong style="color: var(--primary);">📥 Загрузка:</strong> ${j.repo_id} / <code>${j.filename}</code>
+                <span style="color: var(--text-muted); margin-left: 8px;">${(j.downloaded_bytes / (1024*1024)).toFixed(1)} / ${(j.total_bytes / (1024*1024)).toFixed(1)} MB (${j.speed_str})</span>
+              </div>
+              <div style="display: flex; gap: 8px; align-items: center;">
+                <span style="font-weight: 700; color: var(--accent);">${j.progress_pct.toFixed(1)}%</span>
+                <button class="btn-danger" style="font-size: 11px; padding: 2px 8px;" onclick="cancelHFDownload('${j.id}')">Отмена</button>
+              </div>
+            </div>
+            <div style="background: rgba(255,255,255,0.1); height: 6px; border-radius: 3px; overflow: hidden;">
+              <div style="background: var(--primary); width: ${j.progress_pct}%; height: 100%; transition: width 0.3s;"></div>
+            </div>
+          `).join('');
+        } else {
+          topBar.style.display = 'none';
+        }
+      }
+
+      if (modalContainer && modalList) {
+        modalContainer.style.display = 'block';
+        modalList.innerHTML = jobs.map(j => {
+          let statusColor = '#38bdf8';
+          let statusText = `${j.progress_pct.toFixed(1)}% (${j.speed_str})`;
+          if (j.status === 'completed') {
+            statusColor = '#22c55e';
+            statusText = '✅ Завершено';
+          } else if (j.status === 'failed') {
+            statusColor = '#ef4444';
+            statusText = `❌ Ошибка: ${j.error || ''}`;
+          } else if (j.status === 'cancelled') {
+            statusColor = '#f59e0b';
+            statusText = '⚠️ Отменено';
+          }
+
+          return `
+            <div style="background: #0d1322; border: 1px solid var(--card-border); border-radius: 6px; padding: 8px 12px; font-size: 12px;">
+              <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px;">
+                <div>
+                  <strong>${j.repo_id}</strong> / <code>${j.filename}</code>
+                </div>
+                <div style="display: flex; gap: 8px; align-items: center;">
+                  <span style="color: ${statusColor}; font-weight: 600;">${statusText}</span>
+                  ${(j.status === 'downloading' || j.status === 'pending') ? `<button class="btn-danger" style="font-size: 10px; padding: 2px 6px;" onclick="cancelHFDownload('${j.id}')">Отмена</button>` : ''}
+                </div>
+              </div>
+              ${(j.status === 'downloading' || j.status === 'pending') ? `
+                <div style="background: rgba(255,255,255,0.1); height: 4px; border-radius: 2px; overflow: hidden; margin-top: 4px;">
+                  <div style="background: var(--primary); width: ${j.progress_pct}%; height: 100%; transition: width 0.3s;"></div>
+                </div>
+              ` : ''}
+            </div>
+          `;
+        }).join('');
+      }
+    }
+
+    async function cancelHFDownload(jobId) {
+      try {
+        await fetch(`/api/downloader/jobs/${jobId}/cancel`, { method: 'POST' });
+        loadDownloadJobs();
+      } catch (err) {}
+    }
+
+    // Periodic check for active downloads & initial load
+    setInterval(loadDownloadJobs, 1000);
+
     loadAll();
+    loadDownloadJobs();
   </script>
 </body>
 </html>
