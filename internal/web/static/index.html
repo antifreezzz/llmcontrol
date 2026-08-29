@@ -433,13 +433,63 @@
       flex-direction: column;
       gap: 12px;
     }
+    .nav-tab-btn {
+      background: #0d1322;
+      border: 1px solid var(--card-border);
+      color: var(--text-muted);
+      padding: 6px 14px;
+      font-size: 13px;
+      font-weight: 600;
+      border-radius: 8px;
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      transition: all 0.2s;
+    }
+    .nav-tab-btn:hover { background: #1e293b; color: var(--text); }
+    .nav-tab-btn.active { background: var(--primary); color: #fff; border-color: var(--primary); }
+    .gallery-thumb {
+      position: relative;
+      border-radius: 8px;
+      overflow: hidden;
+      aspect-ratio: 1/1;
+      border: 1px solid var(--card-border);
+      background: #000;
+      cursor: pointer;
+      transition: transform 0.15s, border-color 0.15s;
+    }
+    .gallery-thumb:hover { transform: scale(1.04); border-color: var(--primary); }
+    .gallery-thumb img { width: 100%; height: 100%; object-fit: cover; }
+    .gallery-thumb-del {
+      position: absolute;
+      top: 4px;
+      right: 4px;
+      background: rgba(239, 68, 68, 0.85);
+      color: #fff;
+      border: none;
+      border-radius: 4px;
+      width: 20px;
+      height: 20px;
+      font-size: 11px;
+      display: none;
+      align-items: center;
+      justify-content: center;
+      cursor: pointer;
+    }
+    .gallery-thumb:hover .gallery-thumb-del { display: flex; }
   </style>
 </head>
 <body>
   <header>
     <div>
       <h1>⚡ LLM Control Center</h1>
-      <div style="font-size: 12px; color: var(--text-muted); margin-top: 3px;">Intel Arc A770 / Vulkan & SYCL LLM Engine</div>
+      <div style="font-size: 12px; color: var(--text-muted); margin-top: 3px;">Intel Arc A770 / Vulkan & SYCL Inference Center</div>
+      <div style="display:flex; gap:8px; margin-top:10px;">
+        <button class="nav-tab-btn active" id="nav-btn-llm" onclick="switchMainView('llm')">💬 LLM Модели</button>
+        <button class="nav-tab-btn" id="nav-btn-img" onclick="switchMainView('img')">🎨 Image Studio</button>
+        <button class="nav-tab-btn" id="nav-btn-train" onclick="switchMainView('train')">⚡ Fine-Tuning Studio</button>
+      </div>
     </div>
     <div class="system-badges">
       <div class="badge">🧠 RAM: <span id="ram-badge" class="badge-val">--</span></div>
@@ -453,16 +503,287 @@
 
   <div id="downloads-bar" style="display:none; margin-bottom: 16px; background: #0c192c; border: 1px solid #1e3a8a; border-radius: 10px; padding: 12px 18px;"></div>
 
-  <div class="grid" id="models-grid"></div>
+  <!-- View 1: LLM Models View -->
+  <div id="view-llm">
+    <div class="grid" id="models-grid"></div>
 
-  <div class="logs-panel">
-    <div class="logs-header">
-      <h3 style="font-size: 15px;">📜 Live Logs: <span id="log-model-name" style="color: var(--primary);">выберите модель</span></h3>
-      <div>
-        <button onclick="refreshLogs()">Обновить логи</button>
+    <div class="logs-panel">
+      <div class="logs-header">
+        <h3 style="font-size: 15px;">📜 Live Logs: <span id="log-model-name" style="color: var(--primary);">выберите модель</span></h3>
+        <div>
+          <button onclick="refreshLogs()">Обновить логи</button>
+        </div>
+      </div>
+      <pre id="logs">Выберите модель для просмотра логов...</pre>
+    </div>
+  </div>
+
+  <!-- View 2: Image Studio (sd-cli Vulkan) -->
+  <div id="view-img" style="display: none;">
+    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 24px; align-items: start;">
+      <!-- Left: Controls -->
+      <div class="card" style="padding: 22px;">
+        <h2 style="font-size: 16px; font-weight: 700; display: flex; align-items: center; justify-content: space-between;">
+          <span>🎨 Генерация изображений</span>
+          <span style="font-size: 11px; background: #0f172a; padding: 2px 8px; border-radius: 4px; border: 1px solid #1e293b; color: var(--primary);">sd-cli Vulkan / Intel Arc</span>
+        </h2>
+
+        <div class="form-group" style="margin-top: 12px;">
+          <label>Промпт (Prompt)</label>
+          <textarea id="img-prompt" rows="3" placeholder="a cute cyberpunk cat with glowing neon eyes, 8k resolution, cinematic lighting..."></textarea>
+        </div>
+
+        <div class="form-group">
+          <label>Отрицательный промпт (Negative Prompt)</label>
+          <input type="text" id="img-neg-prompt" placeholder="blurry, low quality, distorted, bad anatomy..." />
+        </div>
+
+        <div class="form-row">
+          <div class="form-group">
+            <label>Модель диффузии</label>
+            <select id="img-model-select" onchange="onDiffusionModelChange()"></select>
+          </div>
+          <div class="form-group">
+            <label>Семплер (Sampler)</label>
+            <select id="img-sampling-method">
+              <option value="euler">Euler</option>
+              <option value="euler_a">Euler A</option>
+              <option value="dpm++2m">DPM++ 2M</option>
+              <option value="dpm++2s_a">DPM++ 2S A</option>
+              <option value="heun">Heun</option>
+            </select>
+          </div>
+        </div>
+
+        <div class="form-group">
+          <label>Разрешение (Resolution)</label>
+          <div class="quick-badges" style="margin-bottom: 6px;">
+            <button class="quick-badge-btn" onclick="setImageSize(512, 512)">512x512</button>
+            <button class="quick-badge-btn" onclick="setImageSize(768, 768)">768x768</button>
+            <button class="quick-badge-btn" onclick="setImageSize(1024, 1024)">1024x1024</button>
+            <button class="quick-badge-btn" onclick="setImageSize(832, 1216)">832x1216</button>
+            <button class="quick-badge-btn" onclick="setImageSize(1216, 832)">1216x832</button>
+          </div>
+          <div class="form-row">
+            <input type="number" id="img-width" value="512" placeholder="Ширина" />
+            <input type="number" id="img-height" value="512" placeholder="Высота" />
+          </div>
+        </div>
+
+        <div class="form-row">
+          <div class="form-group">
+            <div style="display:flex; justify-content:space-between;">
+              <label>Шаги (Steps)</label>
+              <span id="img-steps-val" style="font-size:12px; font-weight:600; color:var(--primary);">4</span>
+            </div>
+            <input type="range" id="img-steps" min="1" max="50" value="4" oninput="document.getElementById('img-steps-val').textContent = this.value" />
+          </div>
+          <div class="form-group">
+            <div style="display:flex; justify-content:space-between;">
+              <label>CFG Scale</label>
+              <span id="img-cfg-val" style="font-size:12px; font-weight:600; color:var(--primary);">1.0</span>
+            </div>
+            <input type="range" id="img-cfg" min="1.0" max="15.0" step="0.5" value="1.0" oninput="document.getElementById('img-cfg-val').textContent = Number(this.value).toFixed(1)" />
+          </div>
+        </div>
+
+        <div class="form-row">
+          <div class="form-group">
+            <label>Seed (-1 для рандома)</label>
+            <div style="display:flex; gap:6px;">
+              <input type="number" id="img-seed" value="-1" />
+              <button onclick="document.getElementById('img-seed').value = -1" style="font-size:11px; padding:0 8px;">🎲</button>
+            </div>
+          </div>
+          <div class="form-group" style="justify-content: flex-end;">
+            <label class="checkbox-group" title="Держать текстовый энкодер на CPU для экономии видеопамяти Intel Arc">
+              <input type="checkbox" id="img-clip-cpu" checked />
+              <span>🚀 CLIP на CPU (VRAM Safe)</span>
+            </label>
+            <label class="checkbox-group" style="margin-top:4px;" title="Декодировать VAE на CPU">
+              <input type="checkbox" id="img-vae-cpu" />
+              <span>⚡ VAE на CPU</span>
+            </label>
+          </div>
+        </div>
+
+        <div style="margin-top: 14px;">
+          <button id="btn-generate-img" class="btn-primary" style="width: 100%; padding: 12px; font-size: 15px; font-weight: 700;" onclick="triggerImageGeneration()">
+            🎨 Сгенерировать изображение
+          </button>
+        </div>
+
+        <div id="img-gen-status-box" style="display:none; margin-top:12px; background:#0d1322; border:1px solid var(--card-border); border-radius:8px; padding:10px 14px; font-size:12px;">
+          <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;">
+            <span id="img-gen-status-text" style="color:var(--primary); font-weight:600;">Генерация...</span>
+            <div style="display:flex; align-items:center; gap:8px;">
+              <span id="img-gen-timer" style="color:var(--text-muted); font-weight:600;">0.0s</span>
+              <button onclick="cancelImageGeneration()" style="background:#ef4444; color:#fff; border:none; border-radius:4px; padding:2px 8px; font-size:11px; font-weight:600; cursor:pointer;">Отмена</button>
+            </div>
+          </div>
+          <div style="background: rgba(255,255,255,0.1); height:6px; border-radius:3px; overflow:hidden;">
+            <div id="img-gen-progress-bar" style="background:var(--primary); width:0%; height:100%; transition: width 0.2s;"></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Right: Preview & History -->
+      <div style="display: flex; flex-direction: column; gap: 20px;">
+        <!-- Live Result Box -->
+        <div class="card" style="padding: 20px; align-items: center; justify-content: center; min-height: 380px;">
+          <div id="img-preview-empty" style="text-align: center; color: var(--text-muted); padding: 40px 20px;">
+            <div style="font-size: 48px; margin-bottom: 12px;">🖼️</div>
+            <div style="font-size: 15px; font-weight: 600;">Здесь появится результат генерации</div>
+            <div style="font-size: 12px; margin-top: 4px;">Введите промпт слева и нажмите «Сгенерировать»</div>
+          </div>
+
+          <div id="img-preview-container" style="display:none; width:100%; flex-direction:column; gap:12px;">
+            <div style="position:relative; width:100%; border-radius:10px; overflow:hidden; border:1px solid var(--card-border); background:#000; display:flex; align-items:center; justify-content:center;">
+              <img id="img-preview-element" src="" alt="Generated image" style="max-width:100%; max-height:480px; object-fit:contain;" />
+            </div>
+            
+            <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px;">
+              <div id="img-preview-meta" style="font-size:12px; color:var(--text-muted);"></div>
+              <div style="display:flex; gap:8px;">
+                <button class="btn-primary" onclick="downloadCurrentImage()" style="font-size:12px; padding:6px 12px;">📥 Скачать PNG</button>
+                <button onclick="copyCurrentPrompt()" style="font-size:12px; padding:6px 12px;">📋 Скопировать промпт</button>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- History Gallery -->
+        <div class="card" style="padding: 16px;">
+          <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px;">
+            <h3 style="font-size: 14px; font-weight:700;">📸 Недавние генерации</h3>
+            <button onclick="loadImageGallery()" style="font-size:11px; padding:3px 8px;">🔄 Обновить</button>
+          </div>
+          <div id="img-gallery-grid" style="display: grid; grid-template-columns: repeat(auto-fill, minmax(100px, 1fr)); gap: 10px; max-height: 240px; overflow-y: auto;">
+          </div>
+        </div>
       </div>
     </div>
-    <pre id="logs">Выберите модель для просмотра логов...</pre>
+  </div>
+
+  <!-- View 3: Fine-Tuning Studio (PyTorch XPU / LoRA / GGUF) -->
+  <div id="view-train" style="display: none;">
+    <div style="display: grid; grid-template-columns: 1.1fr 1fr; gap: 24px; align-items: start;">
+      <!-- Left Column: New Training Job Form -->
+      <div class="card" style="padding: 22px;">
+        <h2 style="font-size: 16px; font-weight: 700; display: flex; align-items: center; justify-content: space-between;">
+          <span>⚡ Запуск SFT / LoRA обучения</span>
+          <span style="font-size: 11px; background: #0f172a; padding: 2px 8px; border-radius: 4px; border: 1px solid #1e293b; color: var(--primary);">PyTorch XPU / Intel Arc & CUDA</span>
+        </h2>
+
+        <div class="form-group" style="margin-top: 14px;">
+          <label style="font-size: 12px; color: var(--text-muted);">Название задачи:</label>
+          <input type="text" id="train-job-name" value="LFM2.5 Uporka Classifier" placeholder="например, LFM2.5 Classifier" style="width: 100%; padding: 8px 12px; background: #0b0f19; border: 1px solid var(--card-border); color: #fff; border-radius: 6px; font-size: 13px;" />
+        </div>
+
+        <div class="form-group" style="margin-top: 10px;">
+          <label style="font-size: 12px; color: var(--text-muted);">Базовая модель (Base Model Path / HuggingFace ID):</label>
+          <input type="text" id="train-base-model" value="/mnt/storage/ai-models/LiquidAI/LFM2.5-2.6B" placeholder="LiquidAI/LFM2.5-2.6B или путь на диске" style="width: 100%; padding: 8px 12px; background: #0b0f19; border: 1px solid var(--card-border); color: #fff; border-radius: 6px; font-size: 13px;" />
+        </div>
+
+        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-top: 10px;">
+          <div class="form-group">
+            <label style="font-size: 12px; color: var(--text-muted);">Обучающий датасет (train.jsonl):</label>
+            <input type="text" id="train-dataset-path" value="/home/antifreezzz/Documents/projects/uporka-training/data/train.jsonl" style="width: 100%; padding: 8px 12px; background: #0b0f19; border: 1px solid var(--card-border); color: #fff; border-radius: 6px; font-size: 12px;" />
+          </div>
+          <div class="form-group">
+            <label style="font-size: 12px; color: var(--text-muted);">Валидация (val.jsonl):</label>
+            <input type="text" id="train-val-dataset-path" value="/home/antifreezzz/Documents/projects/uporka-training/data/val.jsonl" style="width: 100%; padding: 8px 12px; background: #0b0f19; border: 1px solid var(--card-border); color: #fff; border-radius: 6px; font-size: 12px;" />
+          </div>
+        </div>
+
+        <div class="form-group" style="margin-top: 10px;">
+          <label style="font-size: 12px; color: var(--text-muted);">Имя выходной модели (Output GGUF Name):</label>
+          <input type="text" id="train-output-name" value="lfm2.5-uporka-classifier-q8" placeholder="lfm2.5-uporka-classifier" style="width: 100%; padding: 8px 12px; background: #0b0f19; border: 1px solid var(--card-border); color: #fff; border-radius: 6px; font-size: 13px;" />
+        </div>
+
+        <!-- Hyperparameters Grid -->
+        <div style="background: #0d1527; padding: 14px; border-radius: 8px; border: 1px solid #1e293b; margin-top: 14px;">
+          <div style="font-size: 12px; font-weight: 600; color: var(--primary); margin-bottom: 8px;">⚙️ Гиперпараметры LoRA & Квантования</div>
+          <div style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 10px;">
+            <div>
+              <label style="font-size: 11px; color: var(--text-muted);">Эпохи (Epochs):</label>
+              <input type="number" id="train-epochs" value="3" min="1" max="50" style="width: 100%; padding: 6px; background: #0b0f19; border: 1px solid var(--card-border); color: #fff; border-radius: 4px; font-size: 12px;" />
+            </div>
+            <div>
+              <label style="font-size: 11px; color: var(--text-muted);">Batch Size:</label>
+              <input type="number" id="train-batch-size" value="2" min="1" max="32" style="width: 100%; padding: 6px; background: #0b0f19; border: 1px solid var(--card-border); color: #fff; border-radius: 4px; font-size: 12px;" />
+            </div>
+            <div>
+              <label style="font-size: 11px; color: var(--text-muted);">Grad Accum:</label>
+              <input type="number" id="train-grad-accum" value="8" min="1" max="64" style="width: 100%; padding: 6px; background: #0b0f19; border: 1px solid var(--card-border); color: #fff; border-radius: 4px; font-size: 12px;" />
+            </div>
+            <div>
+              <label style="font-size: 11px; color: var(--text-muted);">Learning Rate:</label>
+              <input type="number" id="train-lr" value="0.0002" step="0.00005" style="width: 100%; padding: 6px; background: #0b0f19; border: 1px solid var(--card-border); color: #fff; border-radius: 4px; font-size: 12px;" />
+            </div>
+            <div>
+              <label style="font-size: 11px; color: var(--text-muted);">LoRA Rank (r):</label>
+              <input type="number" id="train-lora-r" value="16" min="4" max="128" style="width: 100%; padding: 6px; background: #0b0f19; border: 1px solid var(--card-border); color: #fff; border-radius: 4px; font-size: 12px;" />
+            </div>
+            <div>
+              <label style="font-size: 11px; color: var(--text-muted);">Квантование GGUF:</label>
+              <select id="train-quant-type" style="width: 100%; padding: 6px; background: #0b0f19; border: 1px solid var(--card-border); color: #fff; border-radius: 4px; font-size: 12px;">
+                <option value="q8_0">Q8_0 (Высокое качество)</option>
+                <option value="q4_k_m">Q4_K_M (Высокая скорость)</option>
+                <option value="none">Без GGUF (только LoRA)</option>
+              </select>
+            </div>
+          </div>
+        </div>
+
+        <div style="margin-top: 16px; display: flex; gap: 10px;">
+          <button class="btn-success" id="btn-start-training" onclick="startTraining()" style="flex: 1; padding: 10px; font-size: 14px; font-weight: 600;">🚀 Запустить обучение</button>
+          <button class="btn-danger" id="btn-cancel-training" onclick="cancelTraining()" style="display: none; padding: 10px 16px; font-size: 14px;">⏹ Отменить</button>
+        </div>
+      </div>
+
+      <!-- Right Column: Live Monitor & History -->
+      <div style="display: flex; flex-direction: column; gap: 20px;">
+        <!-- Live Status Card -->
+        <div class="card" style="padding: 22px;">
+          <div style="display: flex; justify-content: space-between; align-items: center;">
+            <h3 style="font-size: 15px; font-weight: 700;">📊 Мониторинг обучения</h3>
+            <span id="train-status-badge" class="badge" style="font-size: 11px; color: var(--text-muted);">Ожидание</span>
+          </div>
+
+          <div id="train-active-box" style="margin-top: 14px;">
+            <div style="display: flex; justify-content: space-between; font-size: 13px; margin-bottom: 6px;">
+              <span id="train-progress-text">Шаг: 0 / 0</span>
+              <span id="train-epoch-text" style="color: var(--primary);">Эпоха: 0.0</span>
+            </div>
+            
+            <div style="width: 100%; height: 10px; background: #0b0f19; border-radius: 5px; overflow: hidden; border: 1px solid var(--card-border);">
+              <div id="train-progress-bar" style="width: 0%; height: 100%; background: linear-gradient(90deg, #3b82f6, #10b981); transition: width 0.3s;"></div>
+            </div>
+
+            <!-- Realtime Loss Curve Canvas -->
+            <div style="margin-top: 16px; background: #0b0f19; border-radius: 8px; border: 1px solid var(--card-border); padding: 10px;">
+              <div style="display: flex; justify-content: space-between; font-size: 11px; color: var(--text-muted); margin-bottom: 6px;">
+                <span>Кривая функции потерь (Loss Curve)</span>
+                <span id="train-current-loss-text" style="color: #10b981; font-weight: 600;">Loss: --</span>
+              </div>
+              <canvas id="train-loss-canvas" width="400" height="120" style="width: 100%; height: 120px; display: block;"></canvas>
+            </div>
+          </div>
+        </div>
+
+        <!-- History of Training Jobs -->
+        <div class="card" style="padding: 18px;">
+          <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px;">
+            <h3 style="font-size: 14px; font-weight: 700;">📜 История задач</h3>
+            <button onclick="loadTrainingJobs()" style="font-size: 11px; padding: 3px 8px;">🔄 Обновить</button>
+          </div>
+          <div id="train-jobs-list" style="max-height: 220px; overflow-y: auto; display: flex; flex-direction: column; gap: 8px;">
+            <div style="font-size: 12px; color: var(--text-muted); text-align: center; padding: 12px;">Нет завершенных задач</div>
+          </div>
+        </div>
+      </div>
+    </div>
   </div>
 
   <!-- Modal for Comprehensive Model & Profiles Configurator -->
@@ -481,47 +802,73 @@
       <div class="modal-body" id="tab-general">
         <div class="form-row">
           <div class="form-group">
-            <label>ID Модели (slug)</label>
-            <input type="text" id="m-id" placeholder="например: gemma4" />
+            <label>Тип модели</label>
+            <select id="m-type" onchange="onModelTypeChange()">
+              <option value="llm">💬 Текстовая LLM (llama.cpp)</option>
+              <option value="diffusion">🎨 Диффузия / Изображения (sd.cpp)</option>
+            </select>
           </div>
           <div class="form-group">
-            <label>Отображаемое имя</label>
-            <input type="text" id="m-name" placeholder="например: Gemma 4 26B A4B" />
+            <label>ID Модели (slug)</label>
+            <input type="text" id="m-id" placeholder="например: gemma4 / z-image-turbo" />
           </div>
         </div>
 
         <div class="form-row">
           <div class="form-group">
+            <label>Отображаемое имя</label>
+            <input type="text" id="m-name" placeholder="например: Gemma 4 26B / Z-Image-Turbo" />
+          </div>
+          <div class="form-group">
             <label>Движок (Backend)</label>
             <select id="m-engine">
-              <option value="llama-vk">Llama.cpp Vulkan (Intel Arc / Vulkan)</option>
+              <option value="llama-vk">Llama.cpp Vulkan (Intel Arc / GPU)</option>
               <option value="llama-sycl">Llama.cpp Intel SYCL (Level Zero / XMX)</option>
+              <option value="llama-cpu">Llama.cpp CPU (Host AVX / Zen4)</option>
+              <option value="sd-vk">Stable Diffusion Vulkan (sd-cli)</option>
             </select>
           </div>
+        </div>
+
+        <div class="form-row" id="m-port-row">
           <div class="form-group">
             <label>Порт сервера</label>
             <input type="number" id="m-port" value="8080" />
           </div>
+          <div class="form-group">
+            <label>Профиль по умолчанию при старте</label>
+            <input type="text" id="m-def-profile" value="default" />
+          </div>
         </div>
 
         <div class="form-group">
-          <label>Путь к основному файлу модели (.gguf)</label>
+          <label>Путь к основному файлу модели (.gguf / DiT)</label>
           <input type="text" id="m-path" placeholder="/home/.../model-Q4_0.gguf" />
         </div>
 
-        <div class="form-group">
-          <label>Путь к Vision адаптеру (mmproj .gguf, опционально)</label>
-          <input type="text" id="m-mmproj" placeholder="/home/.../mmproj-BF16.gguf" />
+        <!-- Diffusion specific fields -->
+        <div id="m-diffusion-fields" style="display:none; flex-direction:column; gap:10px;">
+          <div class="form-group">
+            <label>Путь к VAE (.safetensors / .gguf)</label>
+            <input type="text" id="m-vae" placeholder="/home/.../ae.safetensors" />
+          </div>
+          <div class="form-group">
+            <label>Путь к CLIP / Text Encoder (Qwen, T5, CLIP_L .safetensors / .gguf)</label>
+            <input type="text" id="m-clip" placeholder="/home/.../qwen_3_4b.safetensors" />
+          </div>
         </div>
 
-        <div class="form-group">
-          <label>Путь к MTP/Спекулятивному драфту (.gguf, опционально)</label>
-          <input type="text" id="m-mtp" placeholder="/home/.../assistant-MTP-Q8_0.gguf" />
-        </div>
+        <!-- LLM specific fields -->
+        <div id="m-llm-fields" style="display:flex; flex-direction:column; gap:10px;">
+          <div class="form-group">
+            <label>Путь к Vision адаптеру (mmproj .gguf, опционально)</label>
+            <input type="text" id="m-mmproj" placeholder="/home/.../mmproj-BF16.gguf" />
+          </div>
 
-        <div class="form-group">
-          <label>Профиль по умолчанию при старте</label>
-          <input type="text" id="m-def-profile" value="default" />
+          <div class="form-group">
+            <label>Путь к MTP/Спекулятивному драфту (.gguf, опционально)</label>
+            <input type="text" id="m-mtp" placeholder="/home/.../assistant-MTP-Q8_0.gguf" />
+          </div>
         </div>
       </div>
 
@@ -655,11 +1002,11 @@
             </div>
             <div class="form-row">
               <div class="form-group">
-                <label>Tools mode</label>
+                <label>Tools & Web Fetch Mode</label>
                 <select id="p-tools" onchange="syncCurrentProfile()">
-                  <option value="safe">safe (Безопасный режим)</option>
-                  <option value="all">all (Все инструменты)</option>
-                  <option value="">none (Чистый API)</option>
+                  <option value="safe">safe (Файлы, поиск, info + Web Fetch Proxy)</option>
+                  <option value="all">all (Все: shell exec, файлы, grep + Web Fetch Proxy)</option>
+                  <option value="">none (Без инструментов / чистый API)</option>
                 </select>
               </div>
             </div>
@@ -940,8 +1287,16 @@
         card.id = `card-${m.id}`;
         card.className = `card ${isRunning ? 'is-active' : ''}`;
         
+        const isDiffusion = (m.model_type === 'diffusion' || m.engine_id === 'sd-vk');
         let buttonGroupHTML = '';
-        if (isRunning) {
+        if (isDiffusion) {
+          buttonGroupHTML = `
+            <div class="btn-group">
+              <button class="btn-primary" onclick="openModelInStudio('${m.id}')">🎨 В Image Studio</button>
+              <button onclick="openEditModal('${m.id}')">⚙️ Настройки</button>
+            </div>
+          `;
+        } else if (isRunning) {
           buttonGroupHTML = `
             <div class="btn-group running">
               <button class="btn-danger" onclick="stopModel('${m.id}')">⏹ Stop</button>
@@ -963,10 +1318,10 @@
             <div class="card-id-wrapper">
               <button class="fav-btn" onclick="toggleFav('${m.id}', ${!m.is_favorite})" title="В избранное">${m.is_favorite ? '★' : '☆'}</button>
               <span class="card-id" title="${m.id}">${m.id}</span>
-              <span class="card-engine">${m.engine_id}</span>
+              <span class="card-engine">${isDiffusion ? '🎨 ' + m.engine_id : m.engine_id}</span>
             </div>
             <div class="card-top-right">
-              <span class="status-pill ${statusClass}" id="pill-${m.id}">${statusText}</span>
+              <span class="status-pill ${isDiffusion ? 'status-stopped' : statusClass}" id="pill-${m.id}">${isDiffusion ? 'DIFFUSION' : statusText}</span>
               <button class="card-action-icon" onclick="openEditModal('${m.id}')" title="Редактировать модель и профили">⚙️ Настройки</button>
               <button class="card-action-icon" onclick="deleteModel('${m.id}')" title="Удалить">🗑</button>
             </div>
@@ -975,15 +1330,16 @@
           <div class="card-name" title="${m.name}">${m.name}</div>
 
           <div class="meta-grid">
-            <div class="meta-item"><span>Port:</span> <b>${m.default_port}</b></div>
-            <div class="meta-item"><span>Network:</span> <b>${isRunning ? (m.runtime?.host === '0.0.0.0' ? '🌐 LAN' : '🔒 Local') : (defaultProf?.allow_lan ? '🌐 LAN' : '🔒 Local')}</b></div>
-            <div class="meta-item"><span>PID:</span> <b id="pid-${m.id}">${m.runtime ? m.runtime.pid || '-' : '-'}</b></div>
-            <div class="meta-item"><span>MTP Spec:</span> <b>${m.mtp_path ? 'Yes' : 'No'}</b></div>
+            <div class="meta-item"><span>Type:</span> <b>${isDiffusion ? 'Diffusion (sd-cli)' : 'LLM (llama.cpp)'}</b></div>
+            <div class="meta-item"><span>${isDiffusion ? 'VAE:' : 'Network:'}</span> <b>${isDiffusion ? (m.vae_path ? 'Custom' : 'Embedded') : (isRunning ? (m.runtime?.host === '0.0.0.0' ? '🌐 LAN' : '🔒 Local') : (defaultProf?.allow_lan ? '🌐 LAN' : '🔒 Local'))}</b></div>
+            <div class="meta-item"><span>${isDiffusion ? 'Text Enc:' : 'PID:'}</span> <b>${isDiffusion ? (m.clip_path ? 'Custom' : 'None') : (m.runtime ? m.runtime.pid || '-' : '-')}</b></div>
+            <div class="meta-item"><span>${isDiffusion ? 'Engine:' : 'MTP Spec:'}</span> <b>${isDiffusion ? 'Vulkan' : (m.mtp_path ? 'Yes' : 'No')}</b></div>
           </div>
 
           <div id="telemetry-box-${m.id}"></div>
 
           <div class="controls">
+            ${!isDiffusion ? `
             <div class="profile-select-wrapper">
               <select id="prof-${m.id}" onchange="onCardProfileChange('${m.id}')" ${isRunning ? 'disabled' : ''}>
                 ${(m.profiles || []).map(p => `<option value="${p.name}" ${p.name === activeProfName ? 'selected' : ''}>Profile: ${p.name} (ctx ${p.ctx_size}${p.allow_lan ? ', 🌐 LAN' : ''})</option>`).join('')}
@@ -993,6 +1349,7 @@
               <input type="checkbox" id="lan-${m.id}" ${isRunning ? 'disabled' : ''} ${defaultProf?.allow_lan ? 'checked' : ''} />
               <span>🌐 LAN</span>
             </label>
+            ` : ''}
             <div id="btngroup-${m.id}">
               ${buttonGroupHTML}
             </div>
@@ -1000,6 +1357,15 @@
         `;
         grid.appendChild(card);
       });
+    }
+
+    function openModelInStudio(modelId) {
+      switchMainView('img');
+      const select = document.getElementById('img-model-select');
+      if (select) {
+        select.value = modelId;
+        onDiffusionModelChange();
+      }
     }
 
     function onCardProfileChange(id) {
@@ -1085,15 +1451,19 @@
     function openAddModal() {
       isEditMode = false;
       document.getElementById('modal-title').innerText = 'Добавить новую модель';
+      document.getElementById('m-type').value = 'llm';
       document.getElementById('m-id').value = '';
       document.getElementById('m-id').disabled = false;
       document.getElementById('m-name').value = '';
       document.getElementById('m-engine').value = 'llama-vk';
       document.getElementById('m-port').value = 8080;
       document.getElementById('m-path').value = '';
+      document.getElementById('m-vae').value = '';
+      document.getElementById('m-clip').value = '';
       document.getElementById('m-mmproj').value = '';
       document.getElementById('m-mtp').value = '';
       document.getElementById('m-def-profile').value = 'default';
+      onModelTypeChange();
 
       editingProfiles = [
         { name: 'default', description: 'Сбалансированный', ctx_size: 4096, kv_type: 'q8_0', flash_attn: 'auto', use_mtp: true, use_vision: false, enable_ui: true, tools: 'safe', reasoning: 'auto', reasoning_format: 'auto', reasoning_budget: -1, preserve_reasoning: false, cache_reuse: 0, parallel: 1 },
@@ -1111,15 +1481,19 @@
 
       isEditMode = true;
       document.getElementById('modal-title').innerText = `Настройки модели: ${m.name}`;
+      document.getElementById('m-type').value = m.model_type || (m.engine_id === 'sd-vk' ? 'diffusion' : 'llm');
       document.getElementById('m-id').value = m.id;
       document.getElementById('m-id').disabled = true;
       document.getElementById('m-name').value = m.name;
       document.getElementById('m-engine').value = m.engine_id;
       document.getElementById('m-port').value = m.default_port;
       document.getElementById('m-path').value = m.model_path;
+      document.getElementById('m-vae').value = m.vae_path || '';
+      document.getElementById('m-clip').value = m.clip_path || '';
       document.getElementById('m-mmproj').value = m.mmproj_path || '';
       document.getElementById('m-mtp').value = m.mtp_path || '';
       document.getElementById('m-def-profile').value = m.default_profile || 'default';
+      onModelTypeChange();
 
       editingProfiles = JSON.parse(JSON.stringify(m.profiles || []));
       if (editingProfiles.length === 0) {
@@ -1129,6 +1503,23 @@
       document.getElementById('prof-count').innerText = editingProfiles.length;
       switchTab('general');
       document.getElementById('model-modal').classList.add('open');
+    }
+
+    function onModelTypeChange() {
+      const type = document.getElementById('m-type').value;
+      const diffFields = document.getElementById('m-diffusion-fields');
+      const llmFields = document.getElementById('m-llm-fields');
+      const engineSelect = document.getElementById('m-engine');
+
+      if (type === 'diffusion') {
+        diffFields.style.display = 'flex';
+        llmFields.style.display = 'none';
+        if (engineSelect.value !== 'sd-vk') engineSelect.value = 'sd-vk';
+      } else {
+        diffFields.style.display = 'none';
+        llmFields.style.display = 'flex';
+        if (engineSelect.value === 'sd-vk') engineSelect.value = 'llama-vk';
+      }
     }
 
     function closeModal() {
@@ -1324,11 +1715,14 @@
     async function saveModelForm() {
       syncCurrentProfile();
 
+      const model_type = document.getElementById('m-type').value;
       const id = document.getElementById('m-id').value.trim();
       const name = document.getElementById('m-name').value.trim();
       const engine_id = document.getElementById('m-engine').value;
       const default_port = parseInt(document.getElementById('m-port').value) || 8080;
       const model_path = document.getElementById('m-path').value.trim();
+      const vae_path = document.getElementById('m-vae').value.trim();
+      const clip_path = document.getElementById('m-clip').value.trim();
       const mmproj_path = document.getElementById('m-mmproj').value.trim();
       const mtp_path = document.getElementById('m-mtp').value.trim();
       const default_profile = document.getElementById('m-def-profile').value.trim() || 'default';
@@ -1350,8 +1744,11 @@
         id,
         name,
         engine_id,
+        model_type,
         default_port,
         model_path,
+        vae_path,
+        clip_path,
         mmproj_path,
         mtp_path,
         default_profile,
@@ -1383,6 +1780,529 @@
       loadAll();
     }
 
+    // Main view navigation
+    function switchMainView(view) {
+      const llmView = document.getElementById('view-llm');
+      const imgView = document.getElementById('view-img');
+      const trainView = document.getElementById('view-train');
+      const btnLLM = document.getElementById('nav-btn-llm');
+      const btnImg = document.getElementById('nav-btn-img');
+      const btnTrain = document.getElementById('nav-btn-train');
+
+      llmView.style.display = 'none';
+      imgView.style.display = 'none';
+      trainView.style.display = 'none';
+      btnLLM.classList.remove('active');
+      btnImg.classList.remove('active');
+      btnTrain.classList.remove('active');
+
+      if (view === 'img') {
+        imgView.style.display = 'block';
+        btnImg.classList.add('active');
+        populateDiffusionModels();
+        loadImageGallery();
+        checkActiveImageJob();
+      } else if (view === 'train') {
+        trainView.style.display = 'block';
+        btnTrain.classList.add('active');
+        checkActiveTraining();
+        loadTrainingJobs();
+      } else {
+        llmView.style.display = 'block';
+        btnLLM.classList.add('active');
+      }
+    }
+
+    function setImageSize(w, h) {
+      document.getElementById('img-width').value = w;
+      document.getElementById('img-height').value = h;
+    }
+
+    function populateDiffusionModels() {
+      const select = document.getElementById('img-model-select');
+      select.innerHTML = '';
+      const diffModels = allModels.filter(m => m.model_type === 'diffusion' || m.engine_id === 'sd-vk');
+      
+      if (diffModels.length === 0) {
+        const opt = document.createElement('option');
+        opt.value = '';
+        opt.textContent = 'Авто (sd-vk по умолчанию)';
+        select.appendChild(opt);
+        allModels.forEach(m => {
+          const o = document.createElement('option');
+          o.value = m.id;
+          o.textContent = `${m.name} (${m.id})`;
+          select.appendChild(o);
+        });
+      } else {
+        diffModels.forEach(m => {
+          const o = document.createElement('option');
+          o.value = m.id;
+          o.textContent = `${m.name} (${m.id})`;
+          select.appendChild(o);
+        });
+      }
+      onDiffusionModelChange();
+    }
+
+    function onDiffusionModelChange() {
+      const modelId = document.getElementById('img-model-select').value;
+      const m = allModels.find(item => item.id === modelId);
+      if (m && m.profiles && m.profiles.length > 0) {
+        const p = m.profiles[0];
+        if (p.width) document.getElementById('img-width').value = p.width;
+        if (p.height) document.getElementById('img-height').value = p.height;
+        if (p.steps) {
+          document.getElementById('img-steps').value = p.steps;
+          document.getElementById('img-steps-val').textContent = p.steps;
+        }
+        if (p.cfg_scale) {
+          document.getElementById('img-cfg').value = p.cfg_scale;
+          document.getElementById('img-cfg-val').textContent = p.cfg_scale.toFixed(1);
+        }
+        if (p.clip_on_cpu !== undefined) document.getElementById('img-clip-cpu').checked = p.clip_on_cpu;
+        if (p.vae_on_cpu !== undefined) document.getElementById('img-vae-cpu').checked = p.vae_on_cpu;
+        if (p.sampling_method) document.getElementById('img-sampling-method').value = p.sampling_method;
+      }
+    }
+
+    let currentGenImage = null;
+    let genTimerInterval = null;
+    let genStartTime = 0;
+    let activeGenJobId = null;
+
+    function startGenUI(startTime, status) {
+      const btn = document.getElementById('btn-generate-img');
+      const statusBox = document.getElementById('img-gen-status-box');
+      const statusText = document.getElementById('img-gen-status-text');
+      const timerText = document.getElementById('img-gen-timer');
+      const progressBar = document.getElementById('img-gen-progress-bar');
+
+      if (btn) {
+        btn.disabled = true;
+        btn.innerText = '⏳ Генерация на GPU...';
+      }
+      if (statusBox) statusBox.style.display = 'block';
+      if (statusText) statusText.innerText = status || 'Инициализация sd-cli Vulkan...';
+      if (progressBar) progressBar.style.width = '5%';
+
+      genStartTime = startTime || Date.now();
+      clearInterval(genTimerInterval);
+      genTimerInterval = setInterval(() => {
+        const sec = ((Date.now() - genStartTime) / 1000).toFixed(1);
+        if (timerText) timerText.innerText = `${sec}s`;
+      }, 100);
+    }
+
+    function stopGenUI(successMsg) {
+      clearInterval(genTimerInterval);
+      const btn = document.getElementById('btn-generate-img');
+      const statusBox = document.getElementById('img-gen-status-box');
+      const statusText = document.getElementById('img-gen-status-text');
+      const progressBar = document.getElementById('img-gen-progress-bar');
+
+      if (btn) {
+        btn.disabled = false;
+        btn.innerText = '🎨 Сгенерировать изображение';
+      }
+      activeGenJobId = null;
+
+      if (successMsg && statusText && progressBar) {
+        statusText.innerText = successMsg;
+        progressBar.style.width = '100%';
+        setTimeout(() => { if (statusBox) statusBox.style.display = 'none'; }, 2500);
+      } else {
+        if (statusBox) statusBox.style.display = 'none';
+      }
+    }
+
+    async function triggerImageGeneration() {
+      const prompt = document.getElementById('img-prompt').value.trim();
+      if (!prompt) {
+        alert('Пожалуйста, введите промпт для генерации');
+        return;
+      }
+
+      const negPrompt = document.getElementById('img-neg-prompt').value.trim();
+      const modelId = document.getElementById('img-model-select').value;
+      const width = parseInt(document.getElementById('img-width').value) || 512;
+      const height = parseInt(document.getElementById('img-height').value) || 512;
+      const steps = parseInt(document.getElementById('img-steps').value) || 20;
+      const cfgScale = parseFloat(document.getElementById('img-cfg').value) || 7.0;
+      const seed = parseInt(document.getElementById('img-seed').value) || -1;
+      const clipOnCPU = document.getElementById('img-clip-cpu').checked;
+      const vaeOnCPU = document.getElementById('img-vae-cpu').checked;
+      const samplingMethod = document.getElementById('img-sampling-method').value;
+
+      startGenUI(Date.now(), 'Запуск генерации...');
+
+      try {
+        const res = await fetch('/api/images/generate', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            prompt,
+            negative_prompt: negPrompt,
+            model_id: modelId,
+            width,
+            height,
+            steps,
+            cfg_scale: cfgScale,
+            seed: seed > 0 ? seed : 0,
+            clip_on_cpu: clipOnCPU,
+            vae_on_cpu: vaeOnCPU,
+            sampling_method: samplingMethod
+          })
+        });
+
+        if (!res.ok) {
+          let errMsg = `Ошибка сервера (${res.status})`;
+          try {
+            const errData = await res.json();
+            if (errData && errData.error) errMsg = errData.error;
+          } catch (_) {}
+          stopGenUI();
+          alert(`Ошибка запуска генерации: ${errMsg}`);
+          return;
+        }
+
+        const job = await res.json();
+        activeGenJobId = job.id;
+      } catch (err) {
+        stopGenUI();
+        alert(`Ошибка сети: ${err.message}`);
+      }
+    }
+
+    async function cancelImageGeneration() {
+      try {
+        await fetch('/api/images/cancel', { method: 'POST' });
+        stopGenUI('Генерация отменена');
+      } catch (err) {
+        alert(`Ошибка отмены: ${err.message}`);
+      }
+    }
+
+    async function checkActiveImageJob() {
+      try {
+        const res = await fetch('/api/images/active');
+        if (!res.ok) return;
+        const job = await res.json();
+        if (job && job.status === 'running') {
+          activeGenJobId = job.id;
+          const st = job.start_time ? new Date(job.start_time).getTime() : Date.now();
+          startGenUI(st, job.status_text || 'Генерация на GPU...');
+          if (job.percent) {
+            const progressBar = document.getElementById('img-gen-progress-bar');
+            if (progressBar) progressBar.style.width = `${Math.max(5, job.percent)}%`;
+          }
+        }
+      } catch (_) {}
+    }
+
+    function showGeneratedImage(img) {
+      currentGenImage = img;
+      document.getElementById('img-preview-empty').style.display = 'none';
+      const container = document.getElementById('img-preview-container');
+      container.style.display = 'flex';
+      
+      const imgEl = document.getElementById('img-preview-element');
+      imgEl.src = `/api/images/${img.id}/file?t=${Date.now()}`;
+      
+      const metaEl = document.getElementById('img-preview-meta');
+      const sec = (img.duration_ms / 1000).toFixed(1);
+      metaEl.innerHTML = `⏱ <b>${sec}с</b> | 📐 <b>${img.width}x${img.height}</b> | 🔢 Seed: <code>${img.seed}</code> | ⚙️ Steps: <b>${img.steps}</b>`;
+    }
+
+    async function loadImageGallery() {
+      try {
+        const res = await fetch('/api/images?limit=30');
+        if (!res.ok) return;
+        const images = await res.json();
+        renderImageGallery(images);
+      } catch (err) {
+        console.error("Failed to load gallery:", err);
+      }
+    }
+
+    function renderImageGallery(images) {
+      const grid = document.getElementById('img-gallery-grid');
+      if (!grid) return;
+      grid.innerHTML = '';
+
+      if (!images || images.length === 0) {
+        grid.innerHTML = '<div style="color:var(--text-muted); font-size:12px; grid-column:1/-1;">Галерея пуста</div>';
+        return;
+      }
+
+      images.forEach(img => {
+        const div = document.createElement('div');
+        div.className = 'gallery-thumb';
+        div.title = `${img.prompt} (${img.width}x${img.height})`;
+        div.innerHTML = `
+          <img src="/api/images/${img.id}/file" alt="${img.prompt}" loading="lazy" />
+          <button class="gallery-thumb-del" onclick="deleteGalleryImage('${img.id}', event)">✕</button>
+        `;
+        div.onclick = (e) => {
+          if (e.target.classList.contains('gallery-thumb-del')) return;
+          showGeneratedImage(img);
+          document.getElementById('img-prompt').value = img.prompt;
+          if (img.negative_prompt) document.getElementById('img-neg-prompt').value = img.negative_prompt;
+          document.getElementById('img-width').value = img.width;
+          document.getElementById('img-height').value = img.height;
+          document.getElementById('img-steps').value = img.steps;
+          document.getElementById('img-steps-val').textContent = img.steps;
+          document.getElementById('img-cfg').value = img.cfg_scale;
+          document.getElementById('img-cfg-val').textContent = img.cfg_scale.toFixed(1);
+          document.getElementById('img-seed').value = img.seed;
+        };
+        grid.appendChild(div);
+      });
+    }
+
+    async function deleteGalleryImage(id, ev) {
+      if (ev) ev.stopPropagation();
+      if (!confirm('Удалить изображение?')) return;
+      try {
+        await fetch(`/api/images/${id}`, { method: 'DELETE' });
+        loadImageGallery();
+        if (currentGenImage && currentGenImage.id === id) {
+          document.getElementById('img-preview-container').style.display = 'none';
+          document.getElementById('img-preview-empty').style.display = 'block';
+        }
+      } catch (err) {}
+    }
+
+    function downloadCurrentImage() {
+      if (!currentGenImage) return;
+      const a = document.createElement('a');
+      a.href = `/api/images/${currentGenImage.id}/file`;
+      a.download = `${currentGenImage.id}.png`;
+      a.click();
+    }
+
+    function copyCurrentPrompt() {
+      if (!currentGenImage) return;
+      navigator.clipboard.writeText(currentGenImage.prompt);
+      alert('Промпт скопирован в буфер обмена!');
+    }
+
+    // Training Studio Logic
+    let lossHistory = [];
+    let activeTrainingJobId = null;
+
+    async function startTraining() {
+      const name = document.getElementById('train-job-name').value.trim();
+      const baseModel = document.getElementById('train-base-model').value.trim();
+      const datasetPath = document.getElementById('train-dataset-path').value.trim();
+      const valDatasetPath = document.getElementById('train-val-dataset-path').value.trim();
+      const outputName = document.getElementById('train-output-name').value.trim();
+      const epochs = parseInt(document.getElementById('train-epochs').value) || 3;
+      const batchSize = parseInt(document.getElementById('train-batch-size').value) || 2;
+      const gradAccum = parseInt(document.getElementById('train-grad-accum').value) || 8;
+      const lr = parseFloat(document.getElementById('train-lr').value) || 0.0002;
+      const loraR = parseInt(document.getElementById('train-lora-r').value) || 16;
+      const quantType = document.getElementById('train-quant-type').value;
+
+      if (!baseModel || !datasetPath) {
+        alert('Укажите базовую модель и путь к обучающему датасету!');
+        return;
+      }
+
+      lossHistory = [];
+      document.getElementById('btn-start-training').disabled = true;
+      document.getElementById('btn-start-training').innerText = '⏳ Запуск...';
+
+      try {
+        const res = await fetch('/api/training/jobs', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            name: name || 'Fine-Tune Job',
+            base_model_path: baseModel,
+            dataset_path: datasetPath,
+            val_dataset_path: valDatasetPath,
+            output_name: outputName,
+            epochs: epochs,
+            batch_size: batchSize,
+            grad_accum: gradAccum,
+            learning_rate: lr,
+            lora_r: loraR,
+            quant_type: quantType
+          })
+        });
+
+        const data = await res.json();
+        if (!res.ok) {
+          alert('Ошибка старта: ' + (data.error || 'Unknown error'));
+          document.getElementById('btn-start-training').disabled = false;
+          document.getElementById('btn-start-training').innerText = '🚀 Запустить обучение';
+          return;
+        }
+
+        activeTrainingJobId = data.id;
+        setTrainingUIState(true);
+        loadTrainingJobs();
+      } catch (err) {
+        alert('Сетевая ошибка: ' + err.message);
+        document.getElementById('btn-start-training').disabled = false;
+        document.getElementById('btn-start-training').innerText = '🚀 Запустить обучение';
+      }
+    }
+
+    async function cancelTraining() {
+      if (!confirm('Прервать текущий процесс обучения?')) return;
+      await fetch('/api/training/cancel', { method: 'POST' });
+      setTrainingUIState(false);
+      loadTrainingJobs();
+    }
+
+    function setTrainingUIState(isRunning) {
+      const btnStart = document.getElementById('btn-start-training');
+      const btnCancel = document.getElementById('btn-cancel-training');
+      const statusBadge = document.getElementById('train-status-badge');
+
+      if (isRunning) {
+        btnStart.style.display = 'none';
+        btnCancel.style.display = 'block';
+        statusBadge.innerText = '● Обучение в процессе (XPU)';
+        statusBadge.style.color = '#10b981';
+        statusBadge.style.borderColor = '#10b981';
+      } else {
+        btnStart.style.display = 'block';
+        btnStart.disabled = false;
+        btnStart.innerText = '🚀 Запустить обучение';
+        btnCancel.style.display = 'none';
+        statusBadge.innerText = 'Ожидание';
+        statusBadge.style.color = 'var(--text-muted)';
+        statusBadge.style.borderColor = 'var(--card-border)';
+      }
+    }
+
+    async function checkActiveTraining() {
+      try {
+        const res = await fetch('/api/training/active');
+        const data = await res.json();
+        if (data.active && data.job) {
+          activeTrainingJobId = data.job.id;
+          setTrainingUIState(true);
+          updateTrainingProgress(data.job);
+        } else {
+          setTrainingUIState(false);
+        }
+      } catch (_) {}
+    }
+
+    function updateTrainingProgress(job) {
+      const progText = document.getElementById('train-progress-text');
+      const epochText = document.getElementById('train-epoch-text');
+      const progBar = document.getElementById('train-progress-bar');
+      const lossText = document.getElementById('train-current-loss-text');
+
+      if (job.total_steps > 0) {
+        const pct = Math.min(100, Math.max(2, (job.current_step / job.total_steps) * 100));
+        progText.innerText = `Шаг: ${job.current_step} / ${job.total_steps} (${pct.toFixed(0)}%)`;
+        progBar.style.width = `${pct}%`;
+      }
+      if (job.current_epoch) {
+        epochText.innerText = `Эпоха: ${job.current_epoch.toFixed(2)} / ${job.epochs || 3}`;
+      }
+      if (job.current_loss) {
+        lossText.innerText = `Loss: ${job.current_loss.toFixed(4)}`;
+        if (lossHistory.length === 0 || lossHistory[lossHistory.length - 1] !== job.current_loss) {
+          lossHistory.push(job.current_loss);
+          drawLossCanvas(lossHistory);
+        }
+      }
+    }
+
+    function drawLossCanvas(history) {
+      const canvas = document.getElementById('train-loss-canvas');
+      if (!canvas) return;
+      const ctx = canvas.getContext('2d');
+      const w = canvas.width;
+      const h = canvas.height;
+
+      ctx.clearRect(0, 0, w, h);
+
+      // Draw Grid
+      ctx.strokeStyle = '#1e293b';
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      for (let y = 20; y < h; y += 30) {
+        ctx.moveTo(0, y);
+        ctx.lineTo(w, y);
+      }
+      ctx.stroke();
+
+      if (history.length < 2) return;
+
+      const maxLoss = Math.max(...history, 3.0);
+      const minLoss = Math.max(0, Math.min(...history) - 0.2);
+
+      // Draw Gradient Line
+      ctx.strokeStyle = '#10b981';
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+
+      const stepX = (w - 20) / (history.length - 1);
+      history.forEach((val, i) => {
+        const x = 10 + i * stepX;
+        const normalizedY = (val - minLoss) / (maxLoss - minLoss || 1);
+        const y = (h - 15) - normalizedY * (h - 30);
+        if (i === 0) ctx.moveTo(x, y);
+        else ctx.lineTo(x, y);
+      });
+      ctx.stroke();
+
+      // Glow effect dot on latest
+      const lastVal = history[history.length - 1];
+      const lastX = 10 + (history.length - 1) * stepX;
+      const lastNormY = (lastVal - minLoss) / (maxLoss - minLoss || 1);
+      const lastY = (h - 15) - lastNormY * (h - 30);
+
+      ctx.fillStyle = '#38bdf8';
+      ctx.beginPath();
+      ctx.arc(lastX, lastY, 4, 0, Math.PI * 2);
+      ctx.fill();
+    }
+
+    async function loadTrainingJobs() {
+      try {
+        const res = await fetch('/api/training/jobs');
+        const jobs = await res.json();
+        const container = document.getElementById('train-jobs-list');
+        if (!container) return;
+
+        if (!jobs || jobs.length === 0) {
+          container.innerHTML = '<div style="font-size: 12px; color: var(--text-muted); text-align: center; padding: 12px;">Нет завершенных задач</div>';
+          return;
+        }
+
+        container.innerHTML = jobs.map(j => {
+          const isComp = j.status === 'completed';
+          const isFail = j.status === 'failed';
+          const badgeColor = isComp ? '#10b981' : (isFail ? '#ef4444' : 'var(--primary)');
+          const dateStr = new Date(j.created_at).toLocaleString('ru', { month:'short', day:'numeric', hour:'2-digit', minute:'2-digit' });
+
+          return `
+            <div style="background: #0b0f19; border: 1px solid var(--card-border); border-radius: 6px; padding: 10px 12px; display: flex; justify-content: space-between; align-items: center;">
+              <div>
+                <div style="font-size: 13px; font-weight: 600; color: #fff;">${j.name}</div>
+                <div style="font-size: 11px; color: var(--text-muted); margin-top: 2px;">
+                  <span>${dateStr}</span> • <span>Loss: ${j.current_loss ? j.current_loss.toFixed(4) : '--'}</span>
+                  ${j.output_gguf_path ? ` • <span style="color:#38bdf8;">${j.output_gguf_path.split('/').pop()}</span>` : ''}
+                </div>
+              </div>
+              <div style="display: flex; align-items: center; gap: 8px;">
+                <span style="font-size: 11px; color: ${badgeColor}; border: 1px solid ${badgeColor}; padding: 2px 6px; border-radius: 4px;">${j.status}</span>
+              </div>
+            </div>
+          `;
+        }).join('');
+      } catch (_) {}
+    }
+
     // SSE events for zero-polling realtime updates
     const evtSource = new EventSource('/api/events');
     evtSource.onmessage = (e) => {
@@ -1391,11 +2311,50 @@
         if (data.type === 'telemetry' && data.status) {
           applyStatus(data.status);
         } else if (data.type === 'event') {
-          loadModels();
-          if (activeLogModel) refreshLogs();
+          if (data.event && (data.event.startsWith('model:') || data.event.startsWith('profile:'))) {
+            loadModels();
+            if (activeLogModel) refreshLogs();
+          } else if (data.event && data.event.startsWith('training:progress:')) {
+            const jobJSON = data.event.substring('training:progress:'.length);
+            const job = JSON.parse(jobJSON);
+            updateTrainingProgress(job);
+          } else if (data.event && data.event.startsWith('training:completed:')) {
+            setTrainingUIState(false);
+            loadTrainingJobs();
+            alert('🎉 Обучение и квантование успешно завершены! Модель готова к запуску.');
+          } else if (data.event && data.event.startsWith('training:failed:')) {
+            setTrainingUIState(false);
+            loadTrainingJobs();
+            alert('❌ Ошибка обучения: ' + data.event);
+          }
+        } else if (data.type === 'image_load') {
+          const statusBox = document.getElementById('img-gen-status-box');
+          const statusText = document.getElementById('img-gen-status-text');
+          const progressBar = document.getElementById('img-gen-progress-bar');
+          if (statusBox) statusBox.style.display = 'block';
+          if (statusText) statusText.innerText = `Загрузка модели (${data.step}/${data.total})`;
+          if (progressBar) progressBar.style.width = `${Math.max(5, data.percent * 0.25)}%`;
+        } else if (data.type === 'image_progress') {
+          const statusBox = document.getElementById('img-gen-status-box');
+          const statusText = document.getElementById('img-gen-status-text');
+          const progressBar = document.getElementById('img-gen-progress-bar');
+          if (statusBox) statusBox.style.display = 'block';
+          if (statusText) statusText.innerText = `Шаг ${data.step}/${data.total} (${data.percent.toFixed(0)}%)`;
+          if (progressBar) progressBar.style.width = `${Math.max(5, data.percent)}%`;
+        } else if (data.type === 'image_complete') {
+          stopGenUI('✅ Готово!');
+          loadImageGallery();
+          if (data.id) {
+            fetch(`/api/images/${data.id}`).then(r => r.json()).then(img => {
+              if (img && img.id) showGeneratedImage(img);
+            }).catch(() => {});
+          }
+        } else if (data.type === 'image_error') {
+          stopGenUI();
+          alert('Ошибка генерации на GPU. Проверьте лог.');
         }
       } catch (_) {
-        loadAll();
+        // Ignore unparseable SSE ticks
       }
     };
 

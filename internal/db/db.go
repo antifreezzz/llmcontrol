@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sync"
 	"syscall"
@@ -57,9 +58,12 @@ func (d *DB) initSchema(ctx context.Context) error {
 		id TEXT PRIMARY KEY,
 		name TEXT NOT NULL,
 		engine_id TEXT NOT NULL REFERENCES engines(id),
+		model_type TEXT DEFAULT 'llm',
 		model_path TEXT NOT NULL,
 		mmproj_path TEXT DEFAULT '',
 		mtp_path TEXT DEFAULT '',
+		vae_path TEXT DEFAULT '',
+		clip_path TEXT DEFAULT '',
 		default_port INTEGER DEFAULT 8088,
 		default_profile TEXT DEFAULT 'default',
 		is_favorite BOOLEAN DEFAULT 0,
@@ -84,6 +88,19 @@ func (d *DB) initSchema(ctx context.Context) error {
 		enable_ui BOOLEAN DEFAULT 1,
 		allow_lan BOOLEAN DEFAULT 0,
 		tools TEXT DEFAULT 'safe',
+		reasoning TEXT DEFAULT 'auto',
+		reasoning_format TEXT DEFAULT 'auto',
+		reasoning_budget INTEGER DEFAULT -1,
+		preserve_reasoning BOOLEAN DEFAULT 0,
+		cache_reuse INTEGER DEFAULT 0,
+		clip_on_cpu BOOLEAN DEFAULT 0,
+		vae_on_cpu BOOLEAN DEFAULT 0,
+		offload_params BOOLEAN DEFAULT 0,
+		width INTEGER DEFAULT 0,
+		height INTEGER DEFAULT 0,
+		steps INTEGER DEFAULT 0,
+		cfg_scale REAL DEFAULT 0.0,
+		sampling_method TEXT DEFAULT '',
 		extra_args TEXT DEFAULT '',
 		UNIQUE(model_id, name)
 	);
@@ -112,6 +129,51 @@ func (d *DB) initSchema(ctx context.Context) error {
 		output_sample TEXT
 	);
 
+	CREATE TABLE IF NOT EXISTS generated_images (
+		id TEXT PRIMARY KEY,
+		prompt TEXT NOT NULL,
+		negative_prompt TEXT DEFAULT '',
+		model_id TEXT NOT NULL,
+		profile_name TEXT DEFAULT '',
+		width INTEGER DEFAULT 512,
+		height INTEGER DEFAULT 512,
+		steps INTEGER DEFAULT 20,
+		cfg_scale REAL DEFAULT 7.0,
+		seed INTEGER DEFAULT 0,
+		duration_ms INTEGER DEFAULT 0,
+		file_path TEXT NOT NULL,
+		created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+	);
+
+	CREATE TABLE IF NOT EXISTS training_jobs (
+		id TEXT PRIMARY KEY,
+		name TEXT NOT NULL,
+		base_model_path TEXT NOT NULL,
+		dataset_path TEXT NOT NULL,
+		val_dataset_path TEXT DEFAULT '',
+		output_name TEXT NOT NULL,
+		epochs INTEGER DEFAULT 3,
+		batch_size INTEGER DEFAULT 2,
+		grad_accum INTEGER DEFAULT 8,
+		learning_rate REAL DEFAULT 0.0002,
+		lora_r INTEGER DEFAULT 16,
+		lora_alpha INTEGER DEFAULT 32,
+		target_modules TEXT DEFAULT 'all-linear',
+		quant_type TEXT DEFAULT 'q8_0',
+		status TEXT NOT NULL,
+		current_step INTEGER DEFAULT 0,
+		total_steps INTEGER DEFAULT 0,
+		current_epoch REAL DEFAULT 0,
+		current_loss REAL DEFAULT 0,
+		val_loss REAL DEFAULT 0,
+		accuracy REAL DEFAULT 0,
+		error_message TEXT DEFAULT '',
+		output_gguf_path TEXT DEFAULT '',
+		created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+		started_at DATETIME,
+		completed_at DATETIME
+	);
+
 	CREATE TABLE IF NOT EXISTS settings (
 		key TEXT PRIMARY KEY,
 		value TEXT NOT NULL
@@ -122,6 +184,9 @@ func (d *DB) initSchema(ctx context.Context) error {
 	}
 
 	// Auto-migrations for existing tables
+	_, _ = d.db.ExecContext(ctx, "ALTER TABLE models ADD COLUMN model_type TEXT DEFAULT 'llm'")
+	_, _ = d.db.ExecContext(ctx, "ALTER TABLE models ADD COLUMN vae_path TEXT DEFAULT ''")
+	_, _ = d.db.ExecContext(ctx, "ALTER TABLE models ADD COLUMN clip_path TEXT DEFAULT ''")
 	_, _ = d.db.ExecContext(ctx, "ALTER TABLE profiles ADD COLUMN spec_type TEXT DEFAULT ''")
 	_, _ = d.db.ExecContext(ctx, "ALTER TABLE profiles ADD COLUMN draft_model TEXT DEFAULT ''")
 	_, _ = d.db.ExecContext(ctx, "ALTER TABLE profiles ADD COLUMN draft_n_max INTEGER DEFAULT 0")
@@ -132,7 +197,18 @@ func (d *DB) initSchema(ctx context.Context) error {
 	_, _ = d.db.ExecContext(ctx, "ALTER TABLE profiles ADD COLUMN reasoning_budget INTEGER DEFAULT -1")
 	_, _ = d.db.ExecContext(ctx, "ALTER TABLE profiles ADD COLUMN preserve_reasoning BOOLEAN DEFAULT 0")
 	_, _ = d.db.ExecContext(ctx, "ALTER TABLE profiles ADD COLUMN cache_reuse INTEGER DEFAULT 0")
+	_, _ = d.db.ExecContext(ctx, "ALTER TABLE profiles ADD COLUMN clip_on_cpu BOOLEAN DEFAULT 0")
+	_, _ = d.db.ExecContext(ctx, "ALTER TABLE profiles ADD COLUMN vae_on_cpu BOOLEAN DEFAULT 0")
+	_, _ = d.db.ExecContext(ctx, "ALTER TABLE profiles ADD COLUMN offload_params BOOLEAN DEFAULT 0")
+	_, _ = d.db.ExecContext(ctx, "ALTER TABLE profiles ADD COLUMN width INTEGER DEFAULT 0")
+	_, _ = d.db.ExecContext(ctx, "ALTER TABLE profiles ADD COLUMN height INTEGER DEFAULT 0")
+	_, _ = d.db.ExecContext(ctx, "ALTER TABLE profiles ADD COLUMN steps INTEGER DEFAULT 0")
+	_, _ = d.db.ExecContext(ctx, "ALTER TABLE profiles ADD COLUMN cfg_scale REAL DEFAULT 0.0")
+	_, _ = d.db.ExecContext(ctx, "ALTER TABLE profiles ADD COLUMN sampling_method TEXT DEFAULT ''")
 	_, _ = d.db.ExecContext(ctx, "ALTER TABLE runtime_state ADD COLUMN host TEXT DEFAULT '127.0.0.1'")
+	_, _ = d.db.ExecContext(ctx, "UPDATE models SET model_type = 'llm' WHERE model_type IS NULL OR model_type = ''")
+	_, _ = d.db.ExecContext(ctx, "UPDATE models SET vae_path = '' WHERE vae_path IS NULL")
+	_, _ = d.db.ExecContext(ctx, "UPDATE models SET clip_path = '' WHERE clip_path IS NULL")
 	_, _ = d.db.ExecContext(ctx, "UPDATE profiles SET spec_type = '' WHERE spec_type IS NULL")
 	_, _ = d.db.ExecContext(ctx, "UPDATE profiles SET draft_model = '' WHERE draft_model IS NULL")
 	_, _ = d.db.ExecContext(ctx, "UPDATE profiles SET draft_n_max = 0 WHERE draft_n_max IS NULL")
@@ -141,7 +217,63 @@ func (d *DB) initSchema(ctx context.Context) error {
 	_, _ = d.db.ExecContext(ctx, "UPDATE profiles SET reasoning = 'auto' WHERE reasoning IS NULL OR reasoning = ''")
 	_, _ = d.db.ExecContext(ctx, "UPDATE profiles SET reasoning_format = 'auto' WHERE reasoning_format IS NULL OR reasoning_format = ''")
 	_, _ = d.db.ExecContext(ctx, "UPDATE profiles SET reasoning_budget = -1 WHERE reasoning_budget IS NULL")
+	_, _ = d.db.ExecContext(ctx, "UPDATE profiles SET clip_on_cpu = 0 WHERE clip_on_cpu IS NULL")
+	_, _ = d.db.ExecContext(ctx, "UPDATE profiles SET vae_on_cpu = 0 WHERE vae_on_cpu IS NULL")
+	_, _ = d.db.ExecContext(ctx, "UPDATE profiles SET offload_params = 0 WHERE offload_params IS NULL")
+	_, _ = d.db.ExecContext(ctx, "UPDATE profiles SET width = 0 WHERE width IS NULL")
+	_, _ = d.db.ExecContext(ctx, "UPDATE profiles SET height = 0 WHERE height IS NULL")
+	_, _ = d.db.ExecContext(ctx, "UPDATE profiles SET steps = 0 WHERE steps IS NULL")
+	_, _ = d.db.ExecContext(ctx, "UPDATE profiles SET cfg_scale = 0.0 WHERE cfg_scale IS NULL")
+	_, _ = d.db.ExecContext(ctx, "UPDATE profiles SET sampling_method = '' WHERE sampling_method IS NULL")
 	_, _ = d.db.ExecContext(ctx, "UPDATE runtime_state SET host = '127.0.0.1' WHERE host IS NULL OR host = ''")
+
+	// Seed standard engines if available
+	home, _ := os.UserHomeDir()
+	vkBin := filepath.Join(home, "llama.cpp", "build-vk", "bin", "llama-server")
+	if _, err := os.Stat(vkBin); err == nil {
+		_ = d.SaveEngine(ctx, Engine{
+			ID:          "llama-vk",
+			Name:        "Llama.cpp Vulkan (Intel Arc / Vulkan)",
+			BinaryPath:  vkBin,
+			DefaultArgs: "",
+		})
+	}
+	syclBin := filepath.Join(home, "llama-sycl", "llama-latest", "llama-server")
+	if _, err := os.Stat(syclBin); err == nil {
+		_ = d.SaveEngine(ctx, Engine{
+			ID:          "llama-sycl",
+			Name:        "Llama.cpp Intel SYCL (Level Zero / XMX)",
+			BinaryPath:  syclBin,
+			DefaultArgs: "",
+		})
+	}
+	cpuBin, err := exec.LookPath("llama-server")
+	if err == nil && cpuBin != vkBin && cpuBin != syclBin {
+		_ = d.SaveEngine(ctx, Engine{
+			ID:          "llama-cpu",
+			Name:        "Llama.cpp CPU (Host AVX / Zen4)",
+			BinaryPath:  cpuBin,
+			DefaultArgs: "--ngl 0",
+		})
+	} else if err == nil {
+		_ = d.SaveEngine(ctx, Engine{
+			ID:          "llama-cpu",
+			Name:        "Llama.cpp CPU (Host AVX / Zen4)",
+			BinaryPath:  cpuBin,
+			DefaultArgs: "--ngl 0",
+		})
+	}
+
+	// Seed sd-vk engine if available
+	sdVkPath := filepath.Join(home, ".unsloth", "vulkan-sd-cpp", "sd-cli")
+	if _, err := os.Stat(sdVkPath); err == nil {
+		_ = d.SaveEngine(ctx, Engine{
+			ID:          "sd-vk",
+			Name:        "Stable Diffusion Vulkan (sd-cli)",
+			BinaryPath:  sdVkPath,
+			DefaultArgs: "--mode img_gen",
+		})
+	}
 
 	return nil
 }
@@ -200,20 +332,26 @@ func (d *DB) ListEngines(ctx context.Context) ([]Engine, error) {
 func (d *DB) SaveModel(ctx context.Context, m Model) error {
 	d.mu.Lock()
 	defer d.mu.Unlock()
+	if m.ModelType == "" {
+		m.ModelType = "llm"
+	}
 	query := `
-	INSERT INTO models (id, name, engine_id, model_path, mmproj_path, mtp_path, default_port, default_profile, is_favorite)
-	VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+	INSERT INTO models (id, name, engine_id, model_type, model_path, mmproj_path, mtp_path, vae_path, clip_path, default_port, default_profile, is_favorite)
+	VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	ON CONFLICT(id) DO UPDATE SET
 		name=excluded.name,
 		engine_id=excluded.engine_id,
+		model_type=excluded.model_type,
 		model_path=excluded.model_path,
 		mmproj_path=excluded.mmproj_path,
 		mtp_path=excluded.mtp_path,
+		vae_path=excluded.vae_path,
+		clip_path=excluded.clip_path,
 		default_port=excluded.default_port,
 		default_profile=excluded.default_profile,
 		is_favorite=excluded.is_favorite;
 	`
-	_, err := d.db.ExecContext(ctx, query, m.ID, m.Name, m.EngineID, m.ModelPath, m.MMProjPath, m.MTPPath, m.DefaultPort, m.DefaultProfile, m.IsFavorite)
+	_, err := d.db.ExecContext(ctx, query, m.ID, m.Name, m.EngineID, m.ModelType, m.ModelPath, m.MMProjPath, m.MTPPath, m.VAEPath, m.CLIPPath, m.DefaultPort, m.DefaultProfile, m.IsFavorite)
 	return err
 }
 
@@ -221,12 +359,12 @@ func (d *DB) GetModel(ctx context.Context, id string) (*Model, error) {
 	d.mu.RLock()
 	defer d.mu.RUnlock()
 	row := d.db.QueryRowContext(ctx, `
-		SELECT id, name, engine_id, model_path, mmproj_path, mtp_path, default_port, default_profile, is_favorite, created_at
+		SELECT id, name, engine_id, COALESCE(model_type, 'llm'), model_path, mmproj_path, mtp_path, COALESCE(vae_path, ''), COALESCE(clip_path, ''), default_port, default_profile, is_favorite, created_at
 		FROM models WHERE id = ?
 	`, id)
 
 	var m Model
-	if err := row.Scan(&m.ID, &m.Name, &m.EngineID, &m.ModelPath, &m.MMProjPath, &m.MTPPath, &m.DefaultPort, &m.DefaultProfile, &m.IsFavorite, &m.CreatedAt); err != nil {
+	if err := row.Scan(&m.ID, &m.Name, &m.EngineID, &m.ModelType, &m.ModelPath, &m.MMProjPath, &m.MTPPath, &m.VAEPath, &m.CLIPPath, &m.DefaultPort, &m.DefaultProfile, &m.IsFavorite, &m.CreatedAt); err != nil {
 		if err == sql.ErrNoRows {
 			return nil, nil
 		}
@@ -235,7 +373,7 @@ func (d *DB) GetModel(ctx context.Context, id string) (*Model, error) {
 
 	// Profiles
 	pRows, err := d.db.QueryContext(ctx, `
-		SELECT id, model_id, name, description, ctx_size, parallel, kv_type, flash_attn, use_mtp, COALESCE(spec_type, ''), COALESCE(draft_model, ''), COALESCE(draft_n_max, 0), COALESCE(draft_ngl, 0), use_vision, enable_ui, COALESCE(allow_lan, 0), tools, COALESCE(reasoning, 'auto'), COALESCE(reasoning_format, 'auto'), COALESCE(reasoning_budget, -1), COALESCE(preserve_reasoning, 0), COALESCE(cache_reuse, 0), extra_args
+		SELECT id, model_id, name, description, ctx_size, parallel, kv_type, flash_attn, use_mtp, COALESCE(spec_type, ''), COALESCE(draft_model, ''), COALESCE(draft_n_max, 0), COALESCE(draft_ngl, 0), use_vision, enable_ui, COALESCE(allow_lan, 0), tools, COALESCE(reasoning, 'auto'), COALESCE(reasoning_format, 'auto'), COALESCE(reasoning_budget, -1), COALESCE(preserve_reasoning, 0), COALESCE(cache_reuse, 0), COALESCE(clip_on_cpu, 0), COALESCE(vae_on_cpu, 0), COALESCE(offload_params, 0), COALESCE(width, 0), COALESCE(height, 0), COALESCE(steps, 0), COALESCE(cfg_scale, 0.0), COALESCE(sampling_method, ''), extra_args
 		FROM profiles WHERE model_id = ? ORDER BY id
 	`, id)
 	if err != nil {
@@ -245,7 +383,7 @@ func (d *DB) GetModel(ctx context.Context, id string) (*Model, error) {
 
 	for pRows.Next() {
 		var p Profile
-		if err := pRows.Scan(&p.ID, &p.ModelID, &p.Name, &p.Description, &p.CtxSize, &p.Parallel, &p.KVType, &p.FlashAttn, &p.UseMTP, &p.SpecType, &p.DraftModelPath, &p.DraftNMax, &p.DraftNGL, &p.UseVision, &p.EnableUI, &p.AllowLAN, &p.Tools, &p.Reasoning, &p.ReasoningFormat, &p.ReasoningBudget, &p.PreserveReasoning, &p.CacheReuse, &p.ExtraArgs); err != nil {
+		if err := pRows.Scan(&p.ID, &p.ModelID, &p.Name, &p.Description, &p.CtxSize, &p.Parallel, &p.KVType, &p.FlashAttn, &p.UseMTP, &p.SpecType, &p.DraftModelPath, &p.DraftNMax, &p.DraftNGL, &p.UseVision, &p.EnableUI, &p.AllowLAN, &p.Tools, &p.Reasoning, &p.ReasoningFormat, &p.ReasoningBudget, &p.PreserveReasoning, &p.CacheReuse, &p.ClipOnCPU, &p.VAEOnCPU, &p.OffloadParams, &p.Width, &p.Height, &p.Steps, &p.CFGScale, &p.SamplingMethod, &p.ExtraArgs); err != nil {
 			return nil, err
 		}
 		m.Profiles = append(m.Profiles, p)
@@ -266,7 +404,7 @@ func (d *DB) ListModels(ctx context.Context) ([]Model, error) {
 	d.mu.RLock()
 	defer d.mu.RUnlock()
 	rows, err := d.db.QueryContext(ctx, `
-		SELECT id, name, engine_id, model_path, mmproj_path, mtp_path, default_port, default_profile, is_favorite, created_at
+		SELECT id, name, engine_id, COALESCE(model_type, 'llm'), model_path, mmproj_path, mtp_path, COALESCE(vae_path, ''), COALESCE(clip_path, ''), default_port, default_profile, is_favorite, created_at
 		FROM models ORDER BY is_favorite DESC, id ASC
 	`)
 	if err != nil {
@@ -277,7 +415,7 @@ func (d *DB) ListModels(ctx context.Context) ([]Model, error) {
 	var list []Model
 	for rows.Next() {
 		var m Model
-		if err := rows.Scan(&m.ID, &m.Name, &m.EngineID, &m.ModelPath, &m.MMProjPath, &m.MTPPath, &m.DefaultPort, &m.DefaultProfile, &m.IsFavorite, &m.CreatedAt); err != nil {
+		if err := rows.Scan(&m.ID, &m.Name, &m.EngineID, &m.ModelType, &m.ModelPath, &m.MMProjPath, &m.MTPPath, &m.VAEPath, &m.CLIPPath, &m.DefaultPort, &m.DefaultProfile, &m.IsFavorite, &m.CreatedAt); err != nil {
 			return nil, err
 		}
 		list = append(list, m)
@@ -287,13 +425,13 @@ func (d *DB) ListModels(ctx context.Context) ([]Model, error) {
 	for i := range list {
 		id := list[i].ID
 		pRows, err := d.db.QueryContext(ctx, `
-			SELECT id, model_id, name, description, ctx_size, parallel, kv_type, flash_attn, use_mtp, COALESCE(spec_type, ''), COALESCE(draft_model, ''), COALESCE(draft_n_max, 0), COALESCE(draft_ngl, 0), use_vision, enable_ui, COALESCE(allow_lan, 0), tools, COALESCE(reasoning, 'auto'), COALESCE(reasoning_format, 'auto'), COALESCE(reasoning_budget, -1), COALESCE(preserve_reasoning, 0), COALESCE(cache_reuse, 0), extra_args
+			SELECT id, model_id, name, description, ctx_size, parallel, kv_type, flash_attn, use_mtp, COALESCE(spec_type, ''), COALESCE(draft_model, ''), COALESCE(draft_n_max, 0), COALESCE(draft_ngl, 0), use_vision, enable_ui, COALESCE(allow_lan, 0), tools, COALESCE(reasoning, 'auto'), COALESCE(reasoning_format, 'auto'), COALESCE(reasoning_budget, -1), COALESCE(preserve_reasoning, 0), COALESCE(cache_reuse, 0), COALESCE(clip_on_cpu, 0), COALESCE(vae_on_cpu, 0), COALESCE(offload_params, 0), COALESCE(width, 0), COALESCE(height, 0), COALESCE(steps, 0), COALESCE(cfg_scale, 0.0), COALESCE(sampling_method, ''), extra_args
 			FROM profiles WHERE model_id = ? ORDER BY id
 		`, id)
 		if err == nil {
 			for pRows.Next() {
 				var p Profile
-				if err := pRows.Scan(&p.ID, &p.ModelID, &p.Name, &p.Description, &p.CtxSize, &p.Parallel, &p.KVType, &p.FlashAttn, &p.UseMTP, &p.SpecType, &p.DraftModelPath, &p.DraftNMax, &p.DraftNGL, &p.UseVision, &p.EnableUI, &p.AllowLAN, &p.Tools, &p.Reasoning, &p.ReasoningFormat, &p.ReasoningBudget, &p.PreserveReasoning, &p.CacheReuse, &p.ExtraArgs); err == nil {
+				if err := pRows.Scan(&p.ID, &p.ModelID, &p.Name, &p.Description, &p.CtxSize, &p.Parallel, &p.KVType, &p.FlashAttn, &p.UseMTP, &p.SpecType, &p.DraftModelPath, &p.DraftNMax, &p.DraftNGL, &p.UseVision, &p.EnableUI, &p.AllowLAN, &p.Tools, &p.Reasoning, &p.ReasoningFormat, &p.ReasoningBudget, &p.PreserveReasoning, &p.CacheReuse, &p.ClipOnCPU, &p.VAEOnCPU, &p.OffloadParams, &p.Width, &p.Height, &p.Steps, &p.CFGScale, &p.SamplingMethod, &p.ExtraArgs); err == nil {
 					list[i].Profiles = append(list[i].Profiles, p)
 				}
 			}
@@ -329,7 +467,7 @@ func (d *DB) ListFavorites(ctx context.Context) ([]Model, error) {
 	d.mu.RLock()
 	defer d.mu.RUnlock()
 	rows, err := d.db.QueryContext(ctx, `
-		SELECT id, name, engine_id, model_path, mmproj_path, mtp_path, default_port, default_profile, is_favorite, created_at
+		SELECT id, name, engine_id, COALESCE(model_type, 'llm'), model_path, mmproj_path, mtp_path, COALESCE(vae_path, ''), COALESCE(clip_path, ''), default_port, default_profile, is_favorite, created_at
 		FROM models WHERE is_favorite = 1 ORDER BY id
 	`)
 	if err != nil {
@@ -340,7 +478,7 @@ func (d *DB) ListFavorites(ctx context.Context) ([]Model, error) {
 	var list []Model
 	for rows.Next() {
 		var m Model
-		if err := rows.Scan(&m.ID, &m.Name, &m.EngineID, &m.ModelPath, &m.MMProjPath, &m.MTPPath, &m.DefaultPort, &m.DefaultProfile, &m.IsFavorite, &m.CreatedAt); err != nil {
+		if err := rows.Scan(&m.ID, &m.Name, &m.EngineID, &m.ModelType, &m.ModelPath, &m.MMProjPath, &m.MTPPath, &m.VAEPath, &m.CLIPPath, &m.DefaultPort, &m.DefaultProfile, &m.IsFavorite, &m.CreatedAt); err != nil {
 			return nil, err
 		}
 		list = append(list, m)
@@ -362,8 +500,8 @@ func (d *DB) SaveProfile(ctx context.Context, p Profile) error {
 		// keep 0 if explicitly set, default -1 if not set
 	}
 	query := `
-	INSERT INTO profiles (model_id, name, description, ctx_size, parallel, kv_type, flash_attn, use_mtp, spec_type, draft_model, draft_n_max, draft_ngl, use_vision, enable_ui, allow_lan, tools, reasoning, reasoning_format, reasoning_budget, preserve_reasoning, cache_reuse, extra_args)
-	VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	INSERT INTO profiles (model_id, name, description, ctx_size, parallel, kv_type, flash_attn, use_mtp, spec_type, draft_model, draft_n_max, draft_ngl, use_vision, enable_ui, allow_lan, tools, reasoning, reasoning_format, reasoning_budget, preserve_reasoning, cache_reuse, clip_on_cpu, vae_on_cpu, offload_params, width, height, steps, cfg_scale, sampling_method, extra_args)
+	VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	ON CONFLICT(model_id, name) DO UPDATE SET
 		description=excluded.description,
 		ctx_size=excluded.ctx_size,
@@ -384,9 +522,17 @@ func (d *DB) SaveProfile(ctx context.Context, p Profile) error {
 		reasoning_budget=excluded.reasoning_budget,
 		preserve_reasoning=excluded.preserve_reasoning,
 		cache_reuse=excluded.cache_reuse,
+		clip_on_cpu=excluded.clip_on_cpu,
+		vae_on_cpu=excluded.vae_on_cpu,
+		offload_params=excluded.offload_params,
+		width=excluded.width,
+		height=excluded.height,
+		steps=excluded.steps,
+		cfg_scale=excluded.cfg_scale,
+		sampling_method=excluded.sampling_method,
 		extra_args=excluded.extra_args;
 	`
-	_, err := d.db.ExecContext(ctx, query, p.ModelID, p.Name, p.Description, p.CtxSize, p.Parallel, p.KVType, p.FlashAttn, p.UseMTP, p.SpecType, p.DraftModelPath, p.DraftNMax, p.DraftNGL, p.UseVision, p.EnableUI, p.AllowLAN, p.Tools, p.Reasoning, p.ReasoningFormat, p.ReasoningBudget, p.PreserveReasoning, p.CacheReuse, p.ExtraArgs)
+	_, err := d.db.ExecContext(ctx, query, p.ModelID, p.Name, p.Description, p.CtxSize, p.Parallel, p.KVType, p.FlashAttn, p.UseMTP, p.SpecType, p.DraftModelPath, p.DraftNMax, p.DraftNGL, p.UseVision, p.EnableUI, p.AllowLAN, p.Tools, p.Reasoning, p.ReasoningFormat, p.ReasoningBudget, p.PreserveReasoning, p.CacheReuse, p.ClipOnCPU, p.VAEOnCPU, p.OffloadParams, p.Width, p.Height, p.Steps, p.CFGScale, p.SamplingMethod, p.ExtraArgs)
 	return err
 }
 
@@ -394,11 +540,11 @@ func (d *DB) GetProfile(ctx context.Context, modelID, profileName string) (*Prof
 	d.mu.RLock()
 	defer d.mu.RUnlock()
 	row := d.db.QueryRowContext(ctx, `
-		SELECT id, model_id, name, description, ctx_size, parallel, kv_type, flash_attn, use_mtp, COALESCE(spec_type, ''), COALESCE(draft_model, ''), COALESCE(draft_n_max, 0), COALESCE(draft_ngl, 0), use_vision, enable_ui, COALESCE(allow_lan, 0), tools, COALESCE(reasoning, 'auto'), COALESCE(reasoning_format, 'auto'), COALESCE(reasoning_budget, -1), COALESCE(preserve_reasoning, 0), COALESCE(cache_reuse, 0), extra_args
+		SELECT id, model_id, name, description, ctx_size, parallel, kv_type, flash_attn, use_mtp, COALESCE(spec_type, ''), COALESCE(draft_model, ''), COALESCE(draft_n_max, 0), COALESCE(draft_ngl, 0), use_vision, enable_ui, COALESCE(allow_lan, 0), tools, COALESCE(reasoning, 'auto'), COALESCE(reasoning_format, 'auto'), COALESCE(reasoning_budget, -1), COALESCE(preserve_reasoning, 0), COALESCE(cache_reuse, 0), COALESCE(clip_on_cpu, 0), COALESCE(vae_on_cpu, 0), COALESCE(offload_params, 0), COALESCE(width, 0), COALESCE(height, 0), COALESCE(steps, 0), COALESCE(cfg_scale, 0.0), COALESCE(sampling_method, ''), extra_args
 		FROM profiles WHERE model_id = ? AND name = ?
 	`, modelID, profileName)
 	var p Profile
-	if err := row.Scan(&p.ID, &p.ModelID, &p.Name, &p.Description, &p.CtxSize, &p.Parallel, &p.KVType, &p.FlashAttn, &p.UseMTP, &p.SpecType, &p.DraftModelPath, &p.DraftNMax, &p.DraftNGL, &p.UseVision, &p.EnableUI, &p.AllowLAN, &p.Tools, &p.Reasoning, &p.ReasoningFormat, &p.ReasoningBudget, &p.PreserveReasoning, &p.CacheReuse, &p.ExtraArgs); err != nil {
+	if err := row.Scan(&p.ID, &p.ModelID, &p.Name, &p.Description, &p.CtxSize, &p.Parallel, &p.KVType, &p.FlashAttn, &p.UseMTP, &p.SpecType, &p.DraftModelPath, &p.DraftNMax, &p.DraftNGL, &p.UseVision, &p.EnableUI, &p.AllowLAN, &p.Tools, &p.Reasoning, &p.ReasoningFormat, &p.ReasoningBudget, &p.PreserveReasoning, &p.CacheReuse, &p.ClipOnCPU, &p.VAEOnCPU, &p.OffloadParams, &p.Width, &p.Height, &p.Steps, &p.CFGScale, &p.SamplingMethod, &p.ExtraArgs); err != nil {
 		if err == sql.ErrNoRows {
 			return nil, nil
 		}
@@ -606,3 +752,229 @@ func (d *DB) GetSetting(ctx context.Context, key string) (string, error) {
 	}
 	return v, nil
 }
+
+// Generated Images
+func (d *DB) SaveGeneratedImage(ctx context.Context, img GeneratedImage) error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	query := `
+	INSERT INTO generated_images (id, prompt, negative_prompt, model_id, profile_name, width, height, steps, cfg_scale, seed, duration_ms, file_path, created_at)
+	VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	ON CONFLICT(id) DO UPDATE SET
+		prompt=excluded.prompt,
+		negative_prompt=excluded.negative_prompt,
+		model_id=excluded.model_id,
+		profile_name=excluded.profile_name,
+		width=excluded.width,
+		height=excluded.height,
+		steps=excluded.steps,
+		cfg_scale=excluded.cfg_scale,
+		seed=excluded.seed,
+		duration_ms=excluded.duration_ms,
+		file_path=excluded.file_path,
+		created_at=excluded.created_at;
+	`
+	now := img.CreatedAt
+	if now.IsZero() {
+		now = time.Now()
+	}
+	_, err := d.db.ExecContext(ctx, query, img.ID, img.Prompt, img.NegativePrompt, img.ModelID, img.ProfileName, img.Width, img.Height, img.Steps, img.CFGScale, img.Seed, img.DurationMs, img.FilePath, now)
+	return err
+}
+
+func (d *DB) GetGeneratedImage(ctx context.Context, id string) (*GeneratedImage, error) {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+	row := d.db.QueryRowContext(ctx, `
+		SELECT id, prompt, COALESCE(negative_prompt, ''), model_id, COALESCE(profile_name, ''), width, height, steps, cfg_scale, seed, duration_ms, file_path, created_at
+		FROM generated_images WHERE id = ?
+	`, id)
+	var img GeneratedImage
+	if err := row.Scan(&img.ID, &img.Prompt, &img.NegativePrompt, &img.ModelID, &img.ProfileName, &img.Width, &img.Height, &img.Steps, &img.CFGScale, &img.Seed, &img.DurationMs, &img.FilePath, &img.CreatedAt); err != nil {
+		if err == sql.ErrNoRows {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return &img, nil
+}
+
+func (d *DB) ListGeneratedImages(ctx context.Context, limit, offset int) ([]GeneratedImage, error) {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+	if limit <= 0 {
+		limit = 50
+	}
+	rows, err := d.db.QueryContext(ctx, `
+		SELECT id, prompt, COALESCE(negative_prompt, ''), model_id, COALESCE(profile_name, ''), width, height, steps, cfg_scale, seed, duration_ms, file_path, created_at
+		FROM generated_images ORDER BY created_at DESC LIMIT ? OFFSET ?
+	`, limit, offset)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var list []GeneratedImage
+	for rows.Next() {
+		var img GeneratedImage
+		if err := rows.Scan(&img.ID, &img.Prompt, &img.NegativePrompt, &img.ModelID, &img.ProfileName, &img.Width, &img.Height, &img.Steps, &img.CFGScale, &img.Seed, &img.DurationMs, &img.FilePath, &img.CreatedAt); err != nil {
+			return nil, err
+		}
+		list = append(list, img)
+	}
+	return list, rows.Err()
+}
+
+func (d *DB) DeleteGeneratedImage(ctx context.Context, id string) error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	_, err := d.db.ExecContext(ctx, "DELETE FROM generated_images WHERE id = ?", id)
+	return err
+}
+
+func (d *DB) CreateTrainingJob(ctx context.Context, job TrainingJob) error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	_, err := d.db.ExecContext(ctx, `
+		INSERT INTO training_jobs (
+			id, name, base_model_path, dataset_path, val_dataset_path, output_name,
+			epochs, batch_size, grad_accum, learning_rate, lora_r, lora_alpha,
+			target_modules, quant_type, status, current_step, total_steps,
+			current_epoch, current_loss, val_loss, accuracy, error_message, output_gguf_path,
+			created_at, started_at, completed_at
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`,
+		job.ID, job.Name, job.BaseModelPath, job.DatasetPath, job.ValDatasetPath, job.OutputName,
+		job.Epochs, job.BatchSize, job.GradAccum, job.LearningRate, job.LoraR, job.LoraAlpha,
+		job.TargetModules, job.QuantType, job.Status, job.CurrentStep, job.TotalSteps,
+		job.CurrentEpoch, job.CurrentLoss, job.ValLoss, job.Accuracy, job.ErrorMessage, job.OutputGGUFPath,
+		job.CreatedAt, job.StartedAt, job.CompletedAt,
+	)
+	return err
+}
+
+func (d *DB) GetTrainingJob(ctx context.Context, id string) (*TrainingJob, error) {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+	row := d.db.QueryRowContext(ctx, `
+		SELECT id, name, base_model_path, dataset_path, COALESCE(val_dataset_path, ''), output_name,
+		       epochs, batch_size, grad_accum, learning_rate, lora_r, lora_alpha,
+		       target_modules, quant_type, status, current_step, total_steps,
+		       current_epoch, current_loss, val_loss, accuracy,
+		       COALESCE(error_message, ''), COALESCE(output_gguf_path, ''),
+		       created_at, started_at, completed_at
+		FROM training_jobs WHERE id = ?
+	`, id)
+	var j TrainingJob
+	var startedAt, completedAt sql.NullTime
+	if err := row.Scan(
+		&j.ID, &j.Name, &j.BaseModelPath, &j.DatasetPath, &j.ValDatasetPath, &j.OutputName,
+		&j.Epochs, &j.BatchSize, &j.GradAccum, &j.LearningRate, &j.LoraR, &j.LoraAlpha,
+		&j.TargetModules, &j.QuantType, &j.Status, &j.CurrentStep, &j.TotalSteps,
+		&j.CurrentEpoch, &j.CurrentLoss, &j.ValLoss, &j.Accuracy,
+		&j.ErrorMessage, &j.OutputGGUFPath,
+		&j.CreatedAt, &startedAt, &completedAt,
+	); err != nil {
+		if err == sql.ErrNoRows {
+			return nil, nil
+		}
+		return nil, err
+	}
+	if startedAt.Valid {
+		j.StartedAt = &startedAt.Time
+	}
+	if completedAt.Valid {
+		j.CompletedAt = &completedAt.Time
+	}
+	return &j, nil
+}
+
+func (d *DB) ListTrainingJobs(ctx context.Context, limit, offset int) ([]TrainingJob, error) {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+	if limit <= 0 {
+		limit = 50
+	}
+	rows, err := d.db.QueryContext(ctx, `
+		SELECT id, name, base_model_path, dataset_path, COALESCE(val_dataset_path, ''), output_name,
+		       epochs, batch_size, grad_accum, learning_rate, lora_r, lora_alpha,
+		       target_modules, quant_type, status, current_step, total_steps,
+		       current_epoch, current_loss, val_loss, accuracy,
+		       COALESCE(error_message, ''), COALESCE(output_gguf_path, ''),
+		       created_at, started_at, completed_at
+		FROM training_jobs ORDER BY created_at DESC LIMIT ? OFFSET ?
+	`, limit, offset)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var list []TrainingJob
+	for rows.Next() {
+		var j TrainingJob
+		var startedAt, completedAt sql.NullTime
+		if err := rows.Scan(
+			&j.ID, &j.Name, &j.BaseModelPath, &j.DatasetPath, &j.ValDatasetPath, &j.OutputName,
+			&j.Epochs, &j.BatchSize, &j.GradAccum, &j.LearningRate, &j.LoraR, &j.LoraAlpha,
+			&j.TargetModules, &j.QuantType, &j.Status, &j.CurrentStep, &j.TotalSteps,
+			&j.CurrentEpoch, &j.CurrentLoss, &j.ValLoss, &j.Accuracy,
+			&j.ErrorMessage, &j.OutputGGUFPath,
+			&j.CreatedAt, &startedAt, &completedAt,
+		); err != nil {
+			return nil, err
+		}
+		if startedAt.Valid {
+			j.StartedAt = &startedAt.Time
+		}
+		if completedAt.Valid {
+			j.CompletedAt = &completedAt.Time
+		}
+		list = append(list, j)
+	}
+	return list, rows.Err()
+}
+
+func (d *DB) UpdateTrainingJobProgress(ctx context.Context, id string, step, totalSteps int, epoch, loss, valLoss, acc float64) error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	_, err := d.db.ExecContext(ctx, `
+		UPDATE training_jobs
+		SET current_step = ?, total_steps = ?, current_epoch = ?, current_loss = ?, val_loss = ?, accuracy = ?
+		WHERE id = ?
+	`, step, totalSteps, epoch, loss, valLoss, acc, id)
+	return err
+}
+
+func (d *DB) UpdateTrainingJobStatus(ctx context.Context, id string, status string, outputGGUF string, errMsg string) error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	now := time.Now()
+	var startedAt, completedAt *time.Time
+	if status == "running" {
+		startedAt = &now
+		_, err := d.db.ExecContext(ctx, `
+			UPDATE training_jobs SET status = ?, started_at = ? WHERE id = ?
+		`, status, startedAt, id)
+		return err
+	}
+	if status == "completed" || status == "failed" || status == "cancelled" {
+		completedAt = &now
+		_, err := d.db.ExecContext(ctx, `
+			UPDATE training_jobs
+			SET status = ?, completed_at = ?, output_gguf_path = COALESCE(NULLIF(?, ''), output_gguf_path), error_message = ?
+			WHERE id = ?
+		`, status, completedAt, outputGGUF, errMsg, id)
+		return err
+	}
+	_, err := d.db.ExecContext(ctx, `UPDATE training_jobs SET status = ? WHERE id = ?`, status, id)
+	return err
+}
+
+func (d *DB) DeleteTrainingJob(ctx context.Context, id string) error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	_, err := d.db.ExecContext(ctx, "DELETE FROM training_jobs WHERE id = ?", id)
+	return err
+}
+
+

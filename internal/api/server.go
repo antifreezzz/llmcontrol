@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io/fs"
 	"net/http"
+	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -89,6 +90,22 @@ func (s *Server) registerRoutes() {
 	s.mux.HandleFunc("POST /api/downloader/start", s.handleDownloaderStart)
 	s.mux.HandleFunc("GET /api/downloader/jobs", s.handleDownloaderJobs)
 	s.mux.HandleFunc("POST /api/downloader/jobs/{id}/cancel", s.handleDownloaderCancel)
+
+	// Image Generation routes
+	s.mux.HandleFunc("POST /api/images/generate", s.handleGenerateImage)
+	s.mux.HandleFunc("GET /api/images/active", s.handleGetActiveImageJob)
+	s.mux.HandleFunc("POST /api/images/cancel", s.handleCancelImage)
+	s.mux.HandleFunc("GET /api/images", s.handleListImages)
+	s.mux.HandleFunc("GET /api/images/{id}", s.handleGetImage)
+	s.mux.HandleFunc("GET /api/images/{id}/file", s.handleGetImageFile)
+	s.mux.HandleFunc("DELETE /api/images/{id}", s.handleDeleteImage)
+
+	// Training Studio routes
+	s.mux.HandleFunc("POST /api/training/jobs", s.handleStartTraining)
+	s.mux.HandleFunc("GET /api/training/jobs", s.handleListTrainingJobs)
+	s.mux.HandleFunc("GET /api/training/jobs/{id}", s.handleGetTrainingJob)
+	s.mux.HandleFunc("GET /api/training/active", s.handleGetActiveTraining)
+	s.mux.HandleFunc("POST /api/training/cancel", s.handleCancelTraining)
 
 	// Web static files
 	if s.staticFS != nil {
@@ -506,6 +523,54 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 			if !ok {
 				return
 			}
+			if strings.HasPrefix(ev, "image:progress:") {
+				parts := strings.Split(ev, ":")
+				if len(parts) >= 6 {
+					step, _ := strconv.Atoi(parts[3])
+					total, _ := strconv.Atoi(parts[4])
+					pct, _ := strconv.ParseFloat(parts[5], 64)
+					payload, _ := json.Marshal(map[string]interface{}{
+						"type":    "image_progress",
+						"id":      parts[2],
+						"step":    step,
+						"total":   total,
+						"percent": pct,
+					})
+					fmt.Fprintf(w, "data: %s\n\n", payload)
+					flusher.Flush()
+					continue
+				}
+			}
+			if strings.HasPrefix(ev, "image:load:") {
+				parts := strings.Split(ev, ":")
+				if len(parts) >= 6 {
+					step, _ := strconv.Atoi(parts[3])
+					total, _ := strconv.Atoi(parts[4])
+					pct, _ := strconv.ParseFloat(parts[5], 64)
+					payload, _ := json.Marshal(map[string]interface{}{
+						"type":    "image_load",
+						"id":      parts[2],
+						"step":    step,
+						"total":   total,
+						"percent": pct,
+					})
+					fmt.Fprintf(w, "data: %s\n\n", payload)
+					flusher.Flush()
+					continue
+				}
+			}
+			if strings.HasPrefix(ev, "image:start:") || strings.HasPrefix(ev, "image:complete:") || strings.HasPrefix(ev, "image:error:") {
+				parts := strings.Split(ev, ":")
+				payload, _ := json.Marshal(map[string]interface{}{
+					"type":  parts[0] + "_" + parts[1],
+					"id":    parts[2],
+					"event": ev,
+				})
+				fmt.Fprintf(w, "data: %s\n\n", payload)
+				flusher.Flush()
+				continue
+			}
+
 			evPayload, _ := json.Marshal(map[string]interface{}{
 				"type":  "event",
 				"event": ev,
@@ -598,4 +663,225 @@ func (s *Server) handleDownloaderCancel(w http.ResponseWriter, r *http.Request) 
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]string{"status": "cancelled"})
 }
+
+func (s *Server) handleGenerateImage(w http.ResponseWriter, r *http.Request) {
+	var req supervisor.ImageGenRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": "invalid json: " + err.Error()})
+		return
+	}
+
+	job, err := s.supervisor.StartImageGenerationAsync(req)
+	if err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusAccepted)
+	_ = json.NewEncoder(w).Encode(job)
+}
+
+func (s *Server) handleGetActiveImageJob(w http.ResponseWriter, r *http.Request) {
+	job := s.supervisor.GetActiveImageJob()
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(job)
+}
+
+func (s *Server) handleCancelImage(w http.ResponseWriter, r *http.Request) {
+	cancelled := s.supervisor.CancelImageGeneration()
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]bool{"cancelled": cancelled})
+}
+
+func (s *Server) handleListImages(w http.ResponseWriter, r *http.Request) {
+	limitStr := r.URL.Query().Get("limit")
+	offsetStr := r.URL.Query().Get("offset")
+	limit := 50
+	offset := 0
+	if l, err := strconv.Atoi(limitStr); err == nil && l > 0 {
+		limit = l
+	}
+	if o, err := strconv.Atoi(offsetStr); err == nil && o >= 0 {
+		offset = o
+	}
+
+	images, err := s.db.ListGeneratedImages(r.Context(), limit, offset)
+	if err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusInternalServerError)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+		return
+	}
+	if images == nil {
+		images = []db.GeneratedImage{}
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(images)
+}
+
+func (s *Server) handleGetImage(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if id == "generate" {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		_ = json.NewEncoder(w).Encode(map[string]string{
+			"error": "Method Not Allowed. Use POST /api/images/generate to generate images.",
+		})
+		return
+	}
+
+	img, err := s.db.GetGeneratedImage(r.Context(), id)
+	if err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusInternalServerError)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+		return
+	}
+	if img == nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusNotFound)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": "image not found"})
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(img)
+}
+
+func (s *Server) handleGetImageFile(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	img, err := s.db.GetGeneratedImage(r.Context(), id)
+	if err != nil || img == nil {
+		http.Error(w, `{"error": "image not found"}`, http.StatusNotFound)
+		return
+	}
+
+	if _, err := os.Stat(img.FilePath); err != nil {
+		http.Error(w, `{"error": "file missing on disk"}`, http.StatusNotFound)
+		return
+	}
+
+	w.Header().Set("Content-Type", "image/png")
+	w.Header().Set("Cache-Control", "public, max-age=86400")
+	http.ServeFile(w, r, img.FilePath)
+}
+
+func (s *Server) handleDeleteImage(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	img, _ := s.db.GetGeneratedImage(r.Context(), id)
+	if img != nil && img.FilePath != "" {
+		_ = os.Remove(img.FilePath)
+	}
+
+	if err := s.db.DeleteGeneratedImage(r.Context(), id); err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusInternalServerError)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]string{"status": "deleted"})
+}
+
+func (s *Server) handleStartTraining(w http.ResponseWriter, r *http.Request) {
+	var req supervisor.TrainingRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": "invalid request body"})
+		return
+	}
+
+	if req.BaseModelPath == "" || req.DatasetPath == "" {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": "base_model_path and dataset_path are required"})
+		return
+	}
+
+	job, err := s.supervisor.StartTraining(r.Context(), req)
+	if err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusConflict)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusAccepted)
+	_ = json.NewEncoder(w).Encode(job)
+}
+
+func (s *Server) handleListTrainingJobs(w http.ResponseWriter, r *http.Request) {
+	limitStr := r.URL.Query().Get("limit")
+	offsetStr := r.URL.Query().Get("offset")
+	limit := 50
+	offset := 0
+	if l, err := strconv.Atoi(limitStr); err == nil && l > 0 {
+		limit = l
+	}
+	if o, err := strconv.Atoi(offsetStr); err == nil && o >= 0 {
+		offset = o
+	}
+
+	jobs, err := s.db.ListTrainingJobs(r.Context(), limit, offset)
+	if err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusInternalServerError)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+		return
+	}
+
+	if jobs == nil {
+		jobs = []db.TrainingJob{}
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(jobs)
+}
+
+func (s *Server) handleGetTrainingJob(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	job, err := s.db.GetTrainingJob(r.Context(), id)
+	if err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusInternalServerError)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+		return
+	}
+	if job == nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusNotFound)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": "training job not found"})
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(job)
+}
+
+func (s *Server) handleGetActiveTraining(w http.ResponseWriter, r *http.Request) {
+	job := s.supervisor.GetActiveTrainingJob()
+	w.Header().Set("Content-Type", "application/json")
+	if job == nil {
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{"active": false, "job": nil})
+		return
+	}
+	_ = json.NewEncoder(w).Encode(map[string]interface{}{"active": true, "job": job})
+}
+
+func (s *Server) handleCancelTraining(w http.ResponseWriter, r *http.Request) {
+	cancelled := s.supervisor.CancelTraining()
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]bool{"cancelled": cancelled})
+}
+
+
 

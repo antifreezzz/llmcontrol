@@ -179,3 +179,143 @@ func TestModelCRUDAndProfiles(t *testing.T) {
 	}
 }
 
+func TestImageGenerationAPI(t *testing.T) {
+	ctx := context.Background()
+	srv, database, _ := setupTestAPI(t)
+
+	// Seed an image record in DB
+	img := db.GeneratedImage{
+		ID:             "img_test_123",
+		Prompt:         "a cute robot",
+		NegativePrompt: "bad",
+		ModelID:        "sd-model",
+		Width:          512,
+		Height:         512,
+		Steps:          20,
+		CFGScale:       7.0,
+		Seed:           42,
+		DurationMs:     1200,
+		FilePath:       "/tmp/test_img.png",
+	}
+	_ = database.SaveGeneratedImage(ctx, img)
+
+	// 1. GET /api/images
+	req := httptest.NewRequest("GET", "/api/images", nil)
+	rec := httptest.NewRecorder()
+	srv.Router().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK, got %d", rec.Code)
+	}
+
+	var images []db.GeneratedImage
+	if err := json.NewDecoder(rec.Body).Decode(&images); err != nil {
+		t.Fatalf("failed to decode images list: %v", err)
+	}
+	if len(images) != 1 || images[0].ID != "img_test_123" {
+		t.Errorf("unexpected images list: %+v", images)
+	}
+
+	// 2. GET /api/images/img_test_123
+	req2 := httptest.NewRequest("GET", "/api/images/img_test_123", nil)
+	rec2 := httptest.NewRecorder()
+	srv.Router().ServeHTTP(rec2, req2)
+
+	if rec2.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK, got %d", rec2.Code)
+	}
+
+	var gotImg db.GeneratedImage
+	if err := json.NewDecoder(rec2.Body).Decode(&gotImg); err != nil {
+		t.Fatalf("failed to decode image: %v", err)
+	}
+	if gotImg.Prompt != "a cute robot" {
+		t.Errorf("unexpected image prompt: %s", gotImg.Prompt)
+	}
+
+	// 3. DELETE /api/images/img_test_123
+	req3 := httptest.NewRequest("DELETE", "/api/images/img_test_123", nil)
+	rec3 := httptest.NewRecorder()
+	srv.Router().ServeHTTP(rec3, req3)
+
+	if rec3.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK on delete, got %d", rec3.Code)
+	}
+
+	deletedImg, _ := database.GetGeneratedImage(ctx, "img_test_123")
+	if deletedImg != nil {
+		t.Errorf("expected image to be deleted from DB")
+	}
+}
+
+func TestAPITrainingJobs(t *testing.T) {
+	ctx := context.Background()
+	srv, database, _ := setupTestAPI(t)
+
+	// Seed training job
+	job := db.TrainingJob{
+		ID:            "train-api-test",
+		Name:          "Test LFM2.5 Fine-Tune",
+		BaseModelPath: "/models/lfm",
+		DatasetPath:   "/data/train.jsonl",
+		OutputName:    "lfm-test",
+		Epochs:        3,
+		BatchSize:     2,
+		Status:        "pending",
+	}
+	_ = database.CreateTrainingJob(ctx, job)
+
+	// 1. GET /api/training/jobs
+	req := httptest.NewRequest("GET", "/api/training/jobs", nil)
+	rec := httptest.NewRecorder()
+	srv.Router().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK, got %d", rec.Code)
+	}
+
+	var jobs []db.TrainingJob
+	if err := json.NewDecoder(rec.Body).Decode(&jobs); err != nil {
+		t.Fatalf("failed to decode jobs list: %v", err)
+	}
+	if len(jobs) != 1 || jobs[0].ID != "train-api-test" {
+		t.Errorf("unexpected jobs list: %+v", jobs)
+	}
+
+	// 2. GET /api/training/jobs/train-api-test
+	req2 := httptest.NewRequest("GET", "/api/training/jobs/train-api-test", nil)
+	rec2 := httptest.NewRecorder()
+	srv.Router().ServeHTTP(rec2, req2)
+
+	if rec2.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK, got %d", rec2.Code)
+	}
+
+	var gotJob db.TrainingJob
+	if err := json.NewDecoder(rec2.Body).Decode(&gotJob); err != nil {
+		t.Fatalf("failed to decode job: %v", err)
+	}
+	if gotJob.Name != "Test LFM2.5 Fine-Tune" {
+		t.Errorf("unexpected job name: %s", gotJob.Name)
+	}
+
+	// 3. GET /api/training/active (idle)
+	req3 := httptest.NewRequest("GET", "/api/training/active", nil)
+	rec3 := httptest.NewRecorder()
+	srv.Router().ServeHTTP(rec3, req3)
+
+	if rec3.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK, got %d", rec3.Code)
+	}
+
+	var activeResp map[string]interface{}
+	if err := json.NewDecoder(rec3.Body).Decode(&activeResp); err != nil {
+		t.Fatalf("failed to decode active response: %v", err)
+	}
+	if activeResp["active"] != false {
+		t.Errorf("expected active=false, got: %+v", activeResp)
+	}
+}
+
+
+
