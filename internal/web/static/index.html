@@ -707,27 +707,27 @@
           <div style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 10px;">
             <div>
               <label style="font-size: 11px; color: var(--text-muted);">Эпохи (Epochs):</label>
-              <input type="number" id="train-epochs" value="3" min="1" max="50" style="width: 100%; padding: 6px; background: #0b0f19; border: 1px solid var(--card-border); color: #fff; border-radius: 4px; font-size: 12px;" />
+              <input type="number" id="train-epochs" name="lora_epochs" autocomplete="off" value="3" min="1" max="50" style="width: 100%; padding: 6px; background: #0b0f19; border: 1px solid var(--card-border); color: #fff; border-radius: 4px; font-size: 12px;" />
             </div>
             <div>
               <label style="font-size: 11px; color: var(--text-muted);">Batch Size:</label>
-              <input type="number" id="train-batch-size" value="2" min="1" max="32" style="width: 100%; padding: 6px; background: #0b0f19; border: 1px solid var(--card-border); color: #fff; border-radius: 4px; font-size: 12px;" />
+              <input type="number" id="train-batch-size" name="lora_batch_size" autocomplete="off" value="2" min="1" max="32" style="width: 100%; padding: 6px; background: #0b0f19; border: 1px solid var(--card-border); color: #fff; border-radius: 4px; font-size: 12px;" />
             </div>
             <div>
               <label style="font-size: 11px; color: var(--text-muted);">Grad Accum:</label>
-              <input type="number" id="train-grad-accum" value="8" min="1" max="64" style="width: 100%; padding: 6px; background: #0b0f19; border: 1px solid var(--card-border); color: #fff; border-radius: 4px; font-size: 12px;" />
+              <input type="number" id="train-grad-accum" name="lora_grad_accum" autocomplete="off" value="8" min="1" max="64" style="width: 100%; padding: 6px; background: #0b0f19; border: 1px solid var(--card-border); color: #fff; border-radius: 4px; font-size: 12px;" />
             </div>
             <div>
               <label style="font-size: 11px; color: var(--text-muted);">Learning Rate:</label>
-              <input type="number" id="train-lr" value="0.0002" step="0.00005" style="width: 100%; padding: 6px; background: #0b0f19; border: 1px solid var(--card-border); color: #fff; border-radius: 4px; font-size: 12px;" />
+              <input type="number" id="train-lr" name="lora_lr" autocomplete="off" value="0.0002" step="0.00005" style="width: 100%; padding: 6px; background: #0b0f19; border: 1px solid var(--card-border); color: #fff; border-radius: 4px; font-size: 12px;" />
             </div>
             <div>
               <label style="font-size: 11px; color: var(--text-muted);">LoRA Rank (r):</label>
-              <input type="number" id="train-lora-r" value="16" min="4" max="128" style="width: 100%; padding: 6px; background: #0b0f19; border: 1px solid var(--card-border); color: #fff; border-radius: 4px; font-size: 12px;" />
+              <input type="number" id="train-lora-r" name="lora_rank" autocomplete="off" value="16" min="4" max="128" style="width: 100%; padding: 6px; background: #0b0f19; border: 1px solid var(--card-border); color: #fff; border-radius: 4px; font-size: 12px;" />
             </div>
             <div>
               <label style="font-size: 11px; color: var(--text-muted);">Квантование GGUF:</label>
-              <select id="train-quant-type" style="width: 100%; padding: 6px; background: #0b0f19; border: 1px solid var(--card-border); color: #fff; border-radius: 4px; font-size: 12px;">
+              <select id="train-quant-type" name="lora_quant" style="width: 100%; padding: 6px; background: #0b0f19; border: 1px solid var(--card-border); color: #fff; border-radius: 4px; font-size: 12px;">
                 <option value="q8_0">Q8_0 (Высокое качество)</option>
                 <option value="q4_k_m">Q4_K_M (Высокая скорость)</option>
                 <option value="none">Без GGUF (только LoRA)</option>
