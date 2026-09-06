@@ -54,12 +54,18 @@ type Supervisor struct {
 	runningCmds    map[string]*exec.Cmd
 	eventChans     map[chan string]struct{}
 	eventMu        sync.RWMutex
-	sampleMu       sync.Mutex
-	lastSample     slotSample
-	liveTPS        float64
-	metricsMu      sync.RWMutex
-	lastMetrics    *LLMSlotMetrics
-	metricsUpdated time.Time
+	sampleMu         sync.Mutex
+	lastSample       slotSample
+	liveTPS          float64
+	metricsMu        sync.RWMutex
+	lastMetrics      *LLMSlotMetrics
+	metricsUpdated   time.Time
+	activeDiffJob    *DiffusionJob
+	activeDiffMu     sync.RWMutex
+	activeDiffCancel context.CancelFunc
+	activeTrainJob    *db.TrainingJob
+	activeTrainMu     sync.RWMutex
+	activeTrainCancel context.CancelFunc
 }
 
 func NewSupervisor(cfg SupervisorConfig) *Supervisor {
@@ -183,6 +189,22 @@ func (s *Supervisor) BuildArgs(m *db.Model, p *db.Profile, port int) []string {
 	if !p.EnableUI {
 		args = append(args, "--no-webui")
 	}
+	// Tools & Web Fetch / MCP proxy
+	if p.Tools != "" && p.Tools != "none" {
+		if !strings.Contains(p.ExtraArgs, "--tools") {
+			switch p.Tools {
+			case "safe":
+				args = append(args, "--tools", "read_file,file_glob_search,grep_search,get_info")
+			case "all":
+				args = append(args, "--tools", "all")
+			default:
+				args = append(args, "--tools", p.Tools)
+			}
+		}
+		if !strings.Contains(p.ExtraArgs, "--webui-mcp-proxy") && !strings.Contains(p.ExtraArgs, "--ui-mcp-proxy") && !strings.Contains(p.ExtraArgs, "--agent") && !strings.Contains(p.ExtraArgs, "-ag") {
+			args = append(args, "--webui-mcp-proxy")
+		}
+	}
 	// Reasoning / Thinking mode
 	if p.Reasoning != "" && p.Reasoning != "auto" {
 		args = append(args, "--reasoning", p.Reasoning)
@@ -248,13 +270,12 @@ func (s *Supervisor) StartProcessOnly(ctx context.Context, modelID, profileName 
 	homeDir, _ := os.UserHomeDir()
 	vkBin := filepath.Join(homeDir, "llama.cpp", "build-vk", "bin", "llama-server")
 	binPath := "llama-server"
-	if _, err := os.Stat(vkBin); err == nil {
+	if eng != nil && eng.BinaryPath != "" {
+		binPath = eng.BinaryPath
+	} else if _, err := os.Stat(vkBin); err == nil {
 		binPath = vkBin
 	} else if _, err := exec.LookPath("llama-server"); err != nil {
 		binPath = vkBin
-	}
-	if eng != nil && eng.BinaryPath != "" && eng.BinaryPath != "llama-server" {
-		binPath = eng.BinaryPath
 	}
 
 	port := model.DefaultPort
@@ -364,13 +385,13 @@ func (s *Supervisor) StartModel(ctx context.Context, modelID, profileName string
 		}
 	}
 
-	// Healthcheck loop (up to 60s)
+	// Healthcheck loop (up to 180s for large 27B+ models)
 	go func() {
 		baseURL := fmt.Sprintf("http://127.0.0.1:%d", port)
 		client := &http.Client{Timeout: 2 * time.Second}
 		start := time.Now()
 
-		for time.Since(start) < 60*time.Second {
+		for time.Since(start) < 180*time.Second {
 			if cmd.ProcessState != nil && cmd.ProcessState.Exited() {
 				return
 			}

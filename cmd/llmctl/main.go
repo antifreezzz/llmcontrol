@@ -21,8 +21,10 @@ import (
 	"github.com/antifreezzz/llmcontrol/internal/downloader"
 	"github.com/antifreezzz/llmcontrol/internal/importer"
 	"github.com/antifreezzz/llmcontrol/internal/mcp"
+	"github.com/antifreezzz/llmcontrol/internal/stt"
 	"github.com/antifreezzz/llmcontrol/internal/supervisor"
 	"github.com/antifreezzz/llmcontrol/internal/telegram"
+	"github.com/antifreezzz/llmcontrol/internal/tunnel"
 	"github.com/antifreezzz/llmcontrol/internal/web"
 )
 
@@ -367,6 +369,58 @@ func main() {
 		}
 		w.Flush()
 
+	case "tunnel-server":
+		ctlListen := ":8443"
+		bindListen := "127.0.0.1:8666"
+		token := cfg.VPSToken
+
+		for i := 1; i < len(filteredArgs); i++ {
+			if (filteredArgs[i] == "--listen" || filteredArgs[i] == "-l") && i+1 < len(filteredArgs) {
+				ctlListen = filteredArgs[i+1]
+				i++
+			} else if (filteredArgs[i] == "--bind" || filteredArgs[i] == "-b") && i+1 < len(filteredArgs) {
+				bindListen = filteredArgs[i+1]
+				i++
+			} else if (filteredArgs[i] == "--token" || filteredArgs[i] == "-t") && i+1 < len(filteredArgs) {
+				token = filteredArgs[i+1]
+				i++
+			}
+		}
+
+		if token == "" {
+			token = os.Getenv("VPS_TOKEN")
+		}
+
+		fmt.Println("☁️ Starting LLMControl Tunnel Server on VPS...")
+		fmt.Printf("🔒 Control Port: %s\n", ctlListen)
+		fmt.Printf("🌐 Local Bind:   %s\n", bindListen)
+		if token != "" {
+			fmt.Println("🔑 Auth Token:   Configured")
+		} else {
+			fmt.Println("⚠️ Auth Token:   NOT configured (open access)")
+		}
+
+		srv := tunnel.NewServer(tunnel.ServerConfig{
+			ControlListen: ctlListen,
+			BindListen:    bindListen,
+			Token:         token,
+		})
+		defer srv.Close()
+
+		stopChan := make(chan os.Signal, 1)
+		signal.Notify(stopChan, os.Interrupt, syscall.SIGTERM)
+		go func() {
+			<-stopChan
+			fmt.Println("\n🛑 Stopping tunnel server...")
+			srv.Close()
+			os.Exit(0)
+		}()
+
+		if err := srv.Start(); err != nil {
+			fmt.Printf("Tunnel server error: %v\n", err)
+			os.Exit(1)
+		}
+
 	default:
 		printUsage()
 	}
@@ -383,6 +437,27 @@ func runDaemon(cfg config.Config, database *db.DB, sup *supervisor.Supervisor) {
 
 	dlMgr := downloader.NewManager(cfg.ModelsDir, database)
 	srv := api.NewServer(database, sup, dlMgr, web.StaticFS())
+
+	// Initialize Whisper STT
+	sttSvc := stt.NewService(stt.Config{
+		BinaryPath: cfg.WhisperBinaryPath,
+		ModelPath:  cfg.WhisperModelPath,
+	})
+	srv.SetSTTService(sttSvc)
+
+	// Initialize Reverse Tunnel Client
+	tunnelMgr := tunnel.NewClientManager(
+		fmt.Sprintf("127.0.0.1:%d", cfg.HTTPPort),
+		cfg.VPSHost,
+		cfg.VPSTunnelPort,
+		cfg.VPSRemotePort,
+		cfg.VPSToken,
+	)
+	srv.SetTunnelManager(tunnelMgr)
+
+	// Configure On-Demand Wake and Idle Auto-Stop
+	srv.SetOnDemandConfig(cfg.WakeOnRequest, cfg.IdleTimeoutSeconds)
+
 	httpServer := &http.Server{
 		Addr:    fmt.Sprintf("%s:%d", cfg.HTTPHost, cfg.HTTPPort),
 		Handler: srv.Router(),
@@ -420,6 +495,8 @@ func runDaemon(cfg config.Config, database *db.DB, sup *supervisor.Supervisor) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	_ = httpServer.Shutdown(ctx)
+	srv.Close()
+	tunnelMgr.Stop()
 	fmt.Println("👋 Goodbye!")
 }
 
@@ -427,7 +504,8 @@ func printUsage() {
 	fmt.Print(`⚡ LLM Control Center (llmctl)
 
 Commands:
-  daemon               Run background daemon (REST API, Web UI, Telegram Bot)
+  daemon               Run background daemon (REST API, Web UI, Telegram Bot, Tunnel Client)
+  tunnel-server        Run reverse tunnel server on VPS (--listen :8443 --bind 127.0.0.1:8666 --token <secret>)
   import [dir]         Import existing shell scripts (default: ~/bin) into SQLite
   list, ps             List all models, runtime statuses, memory & speeds
   start <model>        Start a model (optional: --profile <name>)

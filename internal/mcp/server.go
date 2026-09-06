@@ -227,11 +227,42 @@ func (s *Server) ListTools() []Tool {
 				"required": []string{"model_id", "is_favorite"},
 			},
 		},
+		{
+			Name:        "llm_generate_image",
+			Description: "Generate an image using a local diffusion model (sd-cli Vulkan) on Intel Arc GPU.",
+			InputSchema: map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"prompt":          map[string]interface{}{"type": "string", "description": "Text prompt describing the desired image"},
+					"negative_prompt": map[string]interface{}{"type": "string", "description": "Negative prompt (things to avoid, optional)"},
+					"model_id":        map[string]interface{}{"type": "string", "description": "Diffusion model ID (optional, defaults to first configured diffusion model)"},
+					"width":           map[string]interface{}{"type": "integer", "description": "Width in pixels (e.g. 512, 768, 1024, default 512)"},
+					"height":          map[string]interface{}{"type": "integer", "description": "Height in pixels (e.g. 512, 768, 1024, default 512)"},
+					"steps":           map[string]interface{}{"type": "integer", "description": "Sampling steps (e.g. 4 for turbo, 20-30 for SDXL/Flux)"},
+					"cfg_scale":       map[string]interface{}{"type": "number", "description": "Guidance / CFG scale (e.g. 1.0 for turbo, 7.0 for standard)"},
+					"seed":            map[string]interface{}{"type": "integer", "description": "RNG seed (-1 for random)"},
+					"clip_on_cpu":     map[string]interface{}{"type": "boolean", "description": "Keep text encoder on CPU to save GPU VRAM (recommended on 16GB Arc A770)"},
+				},
+				"required": []string{"prompt"},
+			},
+		},
 	}
 }
 
 func (s *Server) CallTool(ctx context.Context, name string, argsRaw json.RawMessage) (*ToolResult, error) {
 	switch name {
+	case "llm_generate_image", "image_generate":
+		var req supervisor.ImageGenRequest
+		if err := json.Unmarshal(argsRaw, &req); err != nil {
+			return &ToolResult{IsError: true, Content: []ToolContent{{Type: "text", Text: "invalid arguments: " + err.Error()}}}, nil
+		}
+		img, err := s.supervisor.GenerateImage(ctx, req)
+		if err != nil {
+			return &ToolResult{IsError: true, Content: []ToolContent{{Type: "text", Text: "generation failed: " + err.Error()}}}, nil
+		}
+		resJSON, _ := json.MarshalIndent(img, "", "  ")
+		return &ToolResult{Content: []ToolContent{{Type: "text", Text: fmt.Sprintf("Image generated successfully in %d ms!\nSaved to: %s\n\nMetadata:\n%s", img.DurationMs, img.FilePath, string(resJSON))}}}, nil
+
 	case "llm_list_models":
 		models, err := s.db.ListModels(ctx)
 		if err != nil {

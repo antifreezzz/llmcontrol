@@ -401,3 +401,108 @@ func TestProcessLifecycle(t *testing.T) {
 		t.Errorf("expected stopped status, got: %+v", mAfter.Runtime)
 	}
 }
+
+func TestBuildArgsToolsMode(t *testing.T) {
+	sup, _, _ := setupTestSupervisor(t)
+
+	model := &db.Model{
+		ID:          "m1",
+		Name:        "Model 1",
+		EngineID:    "llama-vk",
+		ModelPath:   "/models/m1.gguf",
+		DefaultPort: 8080,
+	}
+
+	tests := []struct {
+		name          string
+		profile       *db.Profile
+		wantTools     string
+		wantProxy     bool
+		notWantTools  bool
+	}{
+		{
+			name: "safe tools",
+			profile: &db.Profile{
+				ModelID: "m1",
+				Name:    "safe-prof",
+				Tools:   "safe",
+			},
+			wantTools: "--tools read_file,file_glob_search,grep_search,get_info",
+			wantProxy: true,
+		},
+		{
+			name: "all tools",
+			profile: &db.Profile{
+				ModelID: "m1",
+				Name:    "all-prof",
+				Tools:   "all",
+			},
+			wantTools: "--tools all",
+			wantProxy: true,
+		},
+		{
+			name: "custom tools",
+			profile: &db.Profile{
+				ModelID: "m1",
+				Name:    "custom-prof",
+				Tools:   "read_file,exec_shell_command",
+			},
+			wantTools: "--tools read_file,exec_shell_command",
+			wantProxy: true,
+		},
+		{
+			name: "none tools",
+			profile: &db.Profile{
+				ModelID: "m1",
+				Name:    "none-prof",
+				Tools:   "",
+			},
+			notWantTools: true,
+			wantProxy:    false,
+		},
+		{
+			name: "explicit none string",
+			profile: &db.Profile{
+				ModelID: "m1",
+				Name:    "none-str-prof",
+				Tools:   "none",
+			},
+			notWantTools: true,
+			wantProxy:    false,
+		},
+		{
+			name: "extra args override tools and proxy",
+			profile: &db.Profile{
+				ModelID:   "m1",
+				Name:      "override-prof",
+				Tools:     "safe",
+				ExtraArgs: "--tools custom_from_extra --webui-mcp-proxy",
+			},
+			wantTools: "--tools custom_from_extra",
+			wantProxy: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			args := sup.BuildArgs(model, tt.profile, 8080)
+			argsStr := strings.Join(args, " ")
+
+			if tt.notWantTools {
+				if strings.Contains(argsStr, "--tools") {
+					t.Errorf("expected no --tools in args, got: %s", argsStr)
+				}
+				if strings.Contains(argsStr, "--webui-mcp-proxy") {
+					t.Errorf("expected no --webui-mcp-proxy in args, got: %s", argsStr)
+				}
+			} else {
+				if tt.wantTools != "" && !strings.Contains(argsStr, tt.wantTools) {
+					t.Errorf("missing tools flag %q in: %s", tt.wantTools, argsStr)
+				}
+				if tt.wantProxy && !strings.Contains(argsStr, "--webui-mcp-proxy") {
+					t.Errorf("missing --webui-mcp-proxy flag in: %s", argsStr)
+				}
+			}
+		})
+	}
+}

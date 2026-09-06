@@ -1,26 +1,42 @@
 package api
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"io/fs"
+	"log"
 	"net/http"
+	"net/http/httputil"
+	"net/url"
+	"os"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/antifreezzz/llmcontrol/internal/db"
 	"github.com/antifreezzz/llmcontrol/internal/downloader"
+	"github.com/antifreezzz/llmcontrol/internal/stt"
 	"github.com/antifreezzz/llmcontrol/internal/supervisor"
+	"github.com/antifreezzz/llmcontrol/internal/tunnel"
 )
 
 type Server struct {
-	db         *db.DB
-	supervisor *supervisor.Supervisor
-	downloader *downloader.Manager
-	staticFS   fs.FS
-	mux        *http.ServeMux
+	db                 *db.DB
+	supervisor         *supervisor.Supervisor
+	downloader         *downloader.Manager
+	staticFS           fs.FS
+	mux                *http.ServeMux
+	sttService         *stt.Service
+	tunnelMgr          *tunnel.ClientManager
+	wakeOnRequest      bool
+	idleTimeoutSeconds int
+	lastActivityUnix   int64
+	idleTicker         *time.Ticker
+	idleStopChan       chan struct{}
 }
 
 type StatusResponse struct {
@@ -38,14 +54,42 @@ func NewServer(database *db.DB, sup *supervisor.Supervisor, dl *downloader.Manag
 		dl = downloader.NewManager("", database)
 	}
 	s := &Server{
-		db:         database,
-		supervisor: sup,
-		downloader: dl,
-		staticFS:   staticFS,
-		mux:        http.NewServeMux(),
+		db:                 database,
+		supervisor:         sup,
+		downloader:         dl,
+		staticFS:           staticFS,
+		mux:                http.NewServeMux(),
+		wakeOnRequest:      true,
+		idleTimeoutSeconds: 300,
+		lastActivityUnix:   time.Now().Unix(),
+		idleStopChan:       make(chan struct{}),
 	}
 	s.registerRoutes()
+	s.startIdleChecker()
 	return s
+}
+
+func (s *Server) SetSTTService(svc *stt.Service) {
+	s.sttService = svc
+}
+
+func (s *Server) SetTunnelManager(tm *tunnel.ClientManager) {
+	s.tunnelMgr = tm
+}
+
+func (s *Server) SetOnDemandConfig(wake bool, idleSeconds int) {
+	s.wakeOnRequest = wake
+	s.idleTimeoutSeconds = idleSeconds
+}
+
+func (s *Server) Close() {
+	if s.idleTicker != nil {
+		s.idleTicker.Stop()
+	}
+	if s.idleStopChan != nil {
+		close(s.idleStopChan)
+		s.idleStopChan = nil
+	}
 }
 
 func (s *Server) Router() http.Handler {
@@ -90,11 +134,42 @@ func (s *Server) registerRoutes() {
 	s.mux.HandleFunc("GET /api/downloader/jobs", s.handleDownloaderJobs)
 	s.mux.HandleFunc("POST /api/downloader/jobs/{id}/cancel", s.handleDownloaderCancel)
 
+	// Image Generation routes
+	s.mux.HandleFunc("POST /api/images/generate", s.handleGenerateImage)
+	s.mux.HandleFunc("GET /api/images/active", s.handleGetActiveImageJob)
+	s.mux.HandleFunc("POST /api/images/cancel", s.handleCancelImage)
+	s.mux.HandleFunc("GET /api/images", s.handleListImages)
+	s.mux.HandleFunc("GET /api/images/{id}", s.handleGetImage)
+	s.mux.HandleFunc("GET /api/images/{id}/file", s.handleGetImageFile)
+	s.mux.HandleFunc("DELETE /api/images/{id}", s.handleDeleteImage)
+
+	// Training Studio routes
+	s.mux.HandleFunc("POST /api/training/jobs", s.handleStartTraining)
+	s.mux.HandleFunc("GET /api/training/jobs", s.handleListTrainingJobs)
+	s.mux.HandleFunc("GET /api/training/jobs/{id}", s.handleGetTrainingJob)
+	s.mux.HandleFunc("GET /api/training/active", s.handleGetActiveTraining)
+	s.mux.HandleFunc("POST /api/training/cancel", s.handleCancelTraining)
+
+	// OpenAI Reverse Proxy & STT
+	s.mux.HandleFunc("POST /v1/audio/transcriptions", s.handleWhisperSTT)
+	s.mux.HandleFunc("POST /api/stt", s.handleWhisperSTT)
+	s.mux.HandleFunc("/v1/", s.handleOpenAIProxy)
+
+	// Tunnel routes
+	s.mux.HandleFunc("GET /api/tunnel/status", s.handleTunnelStatus)
+	s.mux.HandleFunc("POST /api/tunnel/start", s.handleTunnelStart)
+	s.mux.HandleFunc("POST /api/tunnel/stop", s.handleTunnelStop)
+	s.mux.HandleFunc("POST /api/tunnel/config", s.handleTunnelConfig)
+
+	// On-Demand routes
+	s.mux.HandleFunc("GET /api/ondemand", s.handleGetOnDemand)
+	s.mux.HandleFunc("POST /api/ondemand", s.handleUpdateOnDemand)
+
 	// Web static files
 	if s.staticFS != nil {
 		fileServer := http.FileServer(http.FS(s.staticFS))
 		s.mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-			if strings.HasPrefix(r.URL.Path, "/api/") {
+			if strings.HasPrefix(r.URL.Path, "/api/") || strings.HasPrefix(r.URL.Path, "/v1/") {
 				http.NotFound(w, r)
 				return
 			}
@@ -506,6 +581,54 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 			if !ok {
 				return
 			}
+			if strings.HasPrefix(ev, "image:progress:") {
+				parts := strings.Split(ev, ":")
+				if len(parts) >= 6 {
+					step, _ := strconv.Atoi(parts[3])
+					total, _ := strconv.Atoi(parts[4])
+					pct, _ := strconv.ParseFloat(parts[5], 64)
+					payload, _ := json.Marshal(map[string]interface{}{
+						"type":    "image_progress",
+						"id":      parts[2],
+						"step":    step,
+						"total":   total,
+						"percent": pct,
+					})
+					fmt.Fprintf(w, "data: %s\n\n", payload)
+					flusher.Flush()
+					continue
+				}
+			}
+			if strings.HasPrefix(ev, "image:load:") {
+				parts := strings.Split(ev, ":")
+				if len(parts) >= 6 {
+					step, _ := strconv.Atoi(parts[3])
+					total, _ := strconv.Atoi(parts[4])
+					pct, _ := strconv.ParseFloat(parts[5], 64)
+					payload, _ := json.Marshal(map[string]interface{}{
+						"type":    "image_load",
+						"id":      parts[2],
+						"step":    step,
+						"total":   total,
+						"percent": pct,
+					})
+					fmt.Fprintf(w, "data: %s\n\n", payload)
+					flusher.Flush()
+					continue
+				}
+			}
+			if strings.HasPrefix(ev, "image:start:") || strings.HasPrefix(ev, "image:complete:") || strings.HasPrefix(ev, "image:error:") {
+				parts := strings.Split(ev, ":")
+				payload, _ := json.Marshal(map[string]interface{}{
+					"type":  parts[0] + "_" + parts[1],
+					"id":    parts[2],
+					"event": ev,
+				})
+				fmt.Fprintf(w, "data: %s\n\n", payload)
+				flusher.Flush()
+				continue
+			}
+
 			evPayload, _ := json.Marshal(map[string]interface{}{
 				"type":  "event",
 				"event": ev,
@@ -598,4 +721,597 @@ func (s *Server) handleDownloaderCancel(w http.ResponseWriter, r *http.Request) 
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]string{"status": "cancelled"})
 }
+
+func (s *Server) handleGenerateImage(w http.ResponseWriter, r *http.Request) {
+	var req supervisor.ImageGenRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": "invalid json: " + err.Error()})
+		return
+	}
+
+	job, err := s.supervisor.StartImageGenerationAsync(req)
+	if err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusAccepted)
+	_ = json.NewEncoder(w).Encode(job)
+}
+
+func (s *Server) handleGetActiveImageJob(w http.ResponseWriter, r *http.Request) {
+	job := s.supervisor.GetActiveImageJob()
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(job)
+}
+
+func (s *Server) handleCancelImage(w http.ResponseWriter, r *http.Request) {
+	cancelled := s.supervisor.CancelImageGeneration()
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]bool{"cancelled": cancelled})
+}
+
+func (s *Server) handleListImages(w http.ResponseWriter, r *http.Request) {
+	limitStr := r.URL.Query().Get("limit")
+	offsetStr := r.URL.Query().Get("offset")
+	limit := 50
+	offset := 0
+	if l, err := strconv.Atoi(limitStr); err == nil && l > 0 {
+		limit = l
+	}
+	if o, err := strconv.Atoi(offsetStr); err == nil && o >= 0 {
+		offset = o
+	}
+
+	images, err := s.db.ListGeneratedImages(r.Context(), limit, offset)
+	if err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusInternalServerError)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+		return
+	}
+	if images == nil {
+		images = []db.GeneratedImage{}
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(images)
+}
+
+func (s *Server) handleGetImage(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if id == "generate" {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		_ = json.NewEncoder(w).Encode(map[string]string{
+			"error": "Method Not Allowed. Use POST /api/images/generate to generate images.",
+		})
+		return
+	}
+
+	img, err := s.db.GetGeneratedImage(r.Context(), id)
+	if err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusInternalServerError)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+		return
+	}
+	if img == nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusNotFound)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": "image not found"})
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(img)
+}
+
+func (s *Server) handleGetImageFile(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	img, err := s.db.GetGeneratedImage(r.Context(), id)
+	if err != nil || img == nil {
+		http.Error(w, `{"error": "image not found"}`, http.StatusNotFound)
+		return
+	}
+
+	if _, err := os.Stat(img.FilePath); err != nil {
+		http.Error(w, `{"error": "file missing on disk"}`, http.StatusNotFound)
+		return
+	}
+
+	w.Header().Set("Content-Type", "image/png")
+	w.Header().Set("Cache-Control", "public, max-age=86400")
+	http.ServeFile(w, r, img.FilePath)
+}
+
+func (s *Server) handleDeleteImage(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	img, _ := s.db.GetGeneratedImage(r.Context(), id)
+	if img != nil && img.FilePath != "" {
+		_ = os.Remove(img.FilePath)
+	}
+
+	if err := s.db.DeleteGeneratedImage(r.Context(), id); err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusInternalServerError)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]string{"status": "deleted"})
+}
+
+func (s *Server) handleStartTraining(w http.ResponseWriter, r *http.Request) {
+	var req supervisor.TrainingRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": "invalid request body"})
+		return
+	}
+
+	if req.BaseModelPath == "" || req.DatasetPath == "" {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": "base_model_path and dataset_path are required"})
+		return
+	}
+
+	job, err := s.supervisor.StartTraining(r.Context(), req)
+	if err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusConflict)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusAccepted)
+	_ = json.NewEncoder(w).Encode(job)
+}
+
+func (s *Server) handleListTrainingJobs(w http.ResponseWriter, r *http.Request) {
+	limitStr := r.URL.Query().Get("limit")
+	offsetStr := r.URL.Query().Get("offset")
+	limit := 50
+	offset := 0
+	if l, err := strconv.Atoi(limitStr); err == nil && l > 0 {
+		limit = l
+	}
+	if o, err := strconv.Atoi(offsetStr); err == nil && o >= 0 {
+		offset = o
+	}
+
+	jobs, err := s.db.ListTrainingJobs(r.Context(), limit, offset)
+	if err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusInternalServerError)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+		return
+	}
+
+	if jobs == nil {
+		jobs = []db.TrainingJob{}
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(jobs)
+}
+
+func (s *Server) handleGetTrainingJob(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	job, err := s.db.GetTrainingJob(r.Context(), id)
+	if err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusInternalServerError)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+		return
+	}
+	if job == nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusNotFound)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": "training job not found"})
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(job)
+}
+
+func (s *Server) handleGetActiveTraining(w http.ResponseWriter, r *http.Request) {
+	job := s.supervisor.GetActiveTrainingJob()
+	w.Header().Set("Content-Type", "application/json")
+	if job == nil {
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{"active": false, "job": nil})
+		return
+	}
+	_ = json.NewEncoder(w).Encode(map[string]interface{}{"active": true, "job": job})
+}
+
+func (s *Server) handleCancelTraining(w http.ResponseWriter, r *http.Request) {
+	cancelled := s.supervisor.CancelTraining()
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]bool{"cancelled": cancelled})
+}
+
+// ----------------------------------------------------------------------------
+// OpenAI Reverse Proxy & On-Demand Execution
+// ----------------------------------------------------------------------------
+
+func (s *Server) handleOpenAIProxy(w http.ResponseWriter, r *http.Request) {
+	// Find active running model
+	active, _ := s.db.GetActiveRuntimeStates(r.Context())
+	var activePort int
+
+	for _, a := range active {
+		if a.Status == "running" && a.Port > 0 {
+			activePort = a.Port
+			break
+		}
+	}
+
+	// Handle GET /v1/models even if no model is running
+	if r.Method == http.MethodGet && strings.TrimSuffix(r.URL.Path, "/") == "/v1/models" && activePort == 0 {
+		models, err := s.db.ListModels(r.Context())
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		type ModelItem struct {
+			ID      string `json:"id"`
+			Object  string `json:"object"`
+			Created int64  `json:"created"`
+			OwnedBy string `json:"owned_by"`
+		}
+		var items []ModelItem
+		for _, m := range models {
+			items = append(items, ModelItem{
+				ID:      m.ID,
+				Object:  "model",
+				Created: time.Now().Unix(),
+				OwnedBy: "llmcontrol",
+			})
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"object": "list",
+			"data":   items,
+		})
+		return
+	}
+
+	// If no model is currently running, check wake-on-request
+	if activePort == 0 {
+		if !s.wakeOnRequest {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusServiceUnavailable)
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"error": map[string]interface{}{
+					"message": "No model is running and wake_on_request is disabled",
+					"type":    "server_error",
+				},
+			})
+			return
+		}
+
+		// Determine target model to start
+		targetModel := ""
+		targetProfile := ""
+
+		var bodyBytes []byte
+		if r.Body != nil {
+			bodyBytes, _ = io.ReadAll(r.Body)
+			r.Body = io.NopCloser(bytes.NewReader(bodyBytes))
+		}
+
+		var reqBody struct {
+			Model string `json:"model"`
+		}
+		if len(bodyBytes) > 0 {
+			_ = json.Unmarshal(bodyBytes, &reqBody)
+		}
+
+		if reqBody.Model != "" && reqBody.Model != "auto" {
+			if m, _ := s.db.GetModel(r.Context(), reqBody.Model); m != nil {
+				targetModel = m.ID
+				targetProfile = m.DefaultProfile
+			}
+		}
+
+		if targetModel == "" && s.tunnelMgr != nil {
+			st := s.tunnelMgr.GetStatus()
+			if st.TargetModelID != "" {
+				targetModel = st.TargetModelID
+				targetProfile = st.TargetProfile
+			}
+		}
+
+		if targetModel == "" {
+			models, _ := s.db.ListModels(r.Context())
+			for _, m := range models {
+				if m.IsFavorite {
+					targetModel = m.ID
+					targetProfile = m.DefaultProfile
+					break
+				}
+			}
+			if targetModel == "" && len(models) > 0 {
+				targetModel = models[0].ID
+				targetProfile = models[0].DefaultProfile
+			}
+		}
+
+		if targetModel == "" {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusServiceUnavailable)
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"error": map[string]interface{}{
+					"message": "No model available to wake up",
+					"type":    "server_error",
+				},
+			})
+			return
+		}
+
+		log.Printf("[ondemand] waking up model %s (profile: %s) for incoming request...", targetModel, targetProfile)
+		if err := s.supervisor.StartModel(r.Context(), targetModel, targetProfile); err != nil {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusInternalServerError)
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"error": map[string]interface{}{
+					"message": fmt.Sprintf("Failed to wake model %s: %v", targetModel, err),
+					"type":    "server_error",
+				},
+			})
+			return
+		}
+
+		model, _ := s.db.GetModel(r.Context(), targetModel)
+		expectedPort := 8080
+		if model != nil && model.DefaultPort > 0 {
+			expectedPort = model.DefaultPort
+		}
+
+		ready := false
+		for i := 0; i < 60; i++ {
+			time.Sleep(800 * time.Millisecond)
+			client := &http.Client{Timeout: 500 * time.Millisecond}
+			resp, err := client.Get(fmt.Sprintf("http://127.0.0.1:%d/health", expectedPort))
+			if err == nil && resp.StatusCode == 200 {
+				resp.Body.Close()
+				ready = true
+				activePort = expectedPort
+				break
+			}
+			if resp != nil {
+				resp.Body.Close()
+			}
+		}
+
+		if !ready {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusGatewayTimeout)
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"error": map[string]interface{}{
+					"message": "Timed out waiting for model to load and start",
+					"type":    "server_error",
+				},
+			})
+			return
+		}
+	}
+
+	// Update last activity timestamp for idle auto-stop
+	atomic.StoreInt64(&s.lastActivityUnix, time.Now().Unix())
+
+	// Proxy to llama-server
+	targetURL, err := url.Parse(fmt.Sprintf("http://127.0.0.1:%d", activePort))
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	proxy := httputil.NewSingleHostReverseProxy(targetURL)
+	proxy.ServeHTTP(w, r)
+}
+
+func (s *Server) startIdleChecker() {
+	s.idleTicker = time.NewTicker(10 * time.Second)
+
+	go func() {
+		for {
+			select {
+			case <-s.idleStopChan:
+				return
+			case <-s.idleTicker.C:
+				timeout := s.idleTimeoutSeconds
+				if timeout <= 0 {
+					continue
+				}
+				last := atomic.LoadInt64(&s.lastActivityUnix)
+				if last == 0 {
+					continue
+				}
+				if time.Now().Unix()-last > int64(timeout) {
+					active, err := s.db.GetActiveRuntimeStates(context.Background())
+					if err == nil && len(active) > 0 {
+						for _, act := range active {
+							if act.Status == "running" {
+								log.Printf("[ondemand] idle timeout expired (%ds without requests), auto-stopping model %s...", timeout, act.ModelID)
+								_ = s.supervisor.StopModel(context.Background(), act.ModelID)
+							}
+						}
+						atomic.StoreInt64(&s.lastActivityUnix, 0)
+					}
+				}
+			}
+		}
+	}()
+}
+
+// ----------------------------------------------------------------------------
+// Whisper STT Endpoint (OpenAI-compatible)
+// ----------------------------------------------------------------------------
+
+func (s *Server) handleWhisperSTT(w http.ResponseWriter, r *http.Request) {
+	if s.sttService == nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusNotImplemented)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": "Whisper STT service not initialized"})
+		return
+	}
+
+	if err := r.ParseMultipartForm(64 << 20); err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": fmt.Sprintf("failed to parse multipart: %v", err)})
+		return
+	}
+
+	file, header, err := r.FormFile("file")
+	if err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": "missing 'file' form field in multipart request"})
+		return
+	}
+	defer file.Close()
+
+	language := r.FormValue("language")
+	if language == "" {
+		language = "auto"
+	}
+
+	atomic.StoreInt64(&s.lastActivityUnix, time.Now().Unix())
+
+	text, err := s.sttService.Transcribe(r.Context(), file, header.Filename, language)
+	if err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusInternalServerError)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]interface{}{
+		"text": text,
+	})
+}
+
+// ----------------------------------------------------------------------------
+// Tunnel API Endpoints
+// ----------------------------------------------------------------------------
+
+func (s *Server) handleTunnelStatus(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	if s.tunnelMgr == nil {
+		_ = json.NewEncoder(w).Encode(tunnel.Status{
+			IsActive: false,
+			State:    "disabled",
+		})
+		return
+	}
+	_ = json.NewEncoder(w).Encode(s.tunnelMgr.GetStatus())
+}
+
+func (s *Server) handleTunnelStart(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	if s.tunnelMgr == nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": "tunnel manager not initialized"})
+		return
+	}
+	var req struct {
+		ModelID string `json:"model_id"`
+		Profile string `json:"profile"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil && err != io.EOF {
+		w.WriteHeader(http.StatusBadRequest)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+		return
+	}
+	if err := s.tunnelMgr.Start(req.ModelID, req.Profile); err != nil {
+		w.WriteHeader(http.StatusBadRequest)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+		return
+	}
+	_ = json.NewEncoder(w).Encode(s.tunnelMgr.GetStatus())
+}
+
+func (s *Server) handleTunnelStop(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	if s.tunnelMgr != nil {
+		s.tunnelMgr.Stop()
+		_ = json.NewEncoder(w).Encode(s.tunnelMgr.GetStatus())
+		return
+	}
+	_ = json.NewEncoder(w).Encode(map[string]string{"state": "disconnected"})
+}
+
+func (s *Server) handleTunnelConfig(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	if s.tunnelMgr == nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": "tunnel manager not initialized"})
+		return
+	}
+	var req struct {
+		VPSHost       string `json:"vps_host"`
+		VPSTunnelPort int    `json:"vps_tunnel_port"`
+		VPSRemotePort int    `json:"vps_remote_port"`
+		VPSToken      string `json:"vps_token"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		w.WriteHeader(http.StatusBadRequest)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+		return
+	}
+	s.tunnelMgr.UpdateConfig(req.VPSHost, req.VPSTunnelPort, req.VPSRemotePort, req.VPSToken)
+	_ = json.NewEncoder(w).Encode(s.tunnelMgr.GetStatus())
+}
+
+// ----------------------------------------------------------------------------
+// On-Demand API Endpoints
+// ----------------------------------------------------------------------------
+
+func (s *Server) handleGetOnDemand(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]interface{}{
+		"wake_on_request":      s.wakeOnRequest,
+		"idle_timeout_seconds": s.idleTimeoutSeconds,
+	})
+}
+
+func (s *Server) handleUpdateOnDemand(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	var req struct {
+		WakeOnRequest      *bool `json:"wake_on_request"`
+		IdleTimeoutSeconds *int  `json:"idle_timeout_seconds"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		w.WriteHeader(http.StatusBadRequest)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+		return
+	}
+	if req.WakeOnRequest != nil {
+		s.wakeOnRequest = *req.WakeOnRequest
+	}
+	if req.IdleTimeoutSeconds != nil {
+		s.idleTimeoutSeconds = *req.IdleTimeoutSeconds
+	}
+	_ = json.NewEncoder(w).Encode(map[string]interface{}{
+		"wake_on_request":      s.wakeOnRequest,
+		"idle_timeout_seconds": s.idleTimeoutSeconds,
+	})
+}
+
+
+
 

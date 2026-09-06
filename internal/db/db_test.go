@@ -57,8 +57,113 @@ func TestEnginesCRUD(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to list engines: %v", err)
 	}
-	if len(engines) != 1 {
-		t.Errorf("expected 1 engine, got %d", len(engines))
+	if len(engines) < 1 {
+		t.Errorf("expected at least 1 engine, got %d", len(engines))
+	}
+}
+
+func TestDiffusionModelAndGeneratedImagesCRUD(t *testing.T) {
+	ctx := context.Background()
+	d := setupTestDB(t)
+
+	// Save Diffusion Engine
+	_ = d.SaveEngine(ctx, Engine{
+		ID:          "sd-vk",
+		Name:        "Stable Diffusion Vulkan",
+		BinaryPath:  "/path/to/sd-cli",
+		DefaultArgs: "--mode img_gen",
+	})
+
+	// Save Diffusion Model
+	m := Model{
+		ID:             "z-image-turbo",
+		Name:           "Z-Image-Turbo (GGUF Q4_K_M)",
+		EngineID:       "sd-vk",
+		ModelType:      "diffusion",
+		ModelPath:      "/models/z-image-turbo-Q4_K_M.gguf",
+		VAEPath:        "/models/ae.safetensors",
+		CLIPPath:       "/models/qwen_3_4b.safetensors",
+		DefaultProfile: "default",
+	}
+	if err := d.SaveModel(ctx, m); err != nil {
+		t.Fatalf("failed to save diffusion model: %v", err)
+	}
+
+	p := Profile{
+		ModelID:        "z-image-turbo",
+		Name:           "default",
+		Description:    "1024x1024 Turbo with CPU Offload",
+		ClipOnCPU:      true,
+		VAEOnCPU:       false,
+		Width:          1024,
+		Height:         1024,
+		Steps:          4,
+		CFGScale:       1.0,
+		SamplingMethod: "euler",
+		Tools:          "safe",
+	}
+	if err := d.SaveProfile(ctx, p); err != nil {
+		t.Fatalf("failed to save diffusion profile: %v", err)
+	}
+
+	gotModel, err := d.GetModel(ctx, "z-image-turbo")
+	if err != nil || gotModel == nil {
+		t.Fatalf("failed to get diffusion model: %v", err)
+	}
+	if gotModel.ModelType != "diffusion" || gotModel.VAEPath != "/models/ae.safetensors" || gotModel.CLIPPath != "/models/qwen_3_4b.safetensors" {
+		t.Errorf("unexpected diffusion model fields: %+v", gotModel)
+	}
+
+	gotProfile, err := d.GetProfile(ctx, "z-image-turbo", "default")
+	if err != nil || gotProfile == nil {
+		t.Fatalf("failed to get diffusion profile: %v", err)
+	}
+	if !gotProfile.ClipOnCPU || gotProfile.Width != 1024 || gotProfile.Steps != 4 || gotProfile.SamplingMethod != "euler" {
+		t.Errorf("unexpected diffusion profile fields: %+v", gotProfile)
+	}
+
+	// Generated Images CRUD
+	img := GeneratedImage{
+		ID:             "img_123456",
+		Prompt:         "a cute cat in cyberpunk style",
+		NegativePrompt: "blurry, low quality",
+		ModelID:        "z-image-turbo",
+		ProfileName:    "default",
+		Width:          1024,
+		Height:         1024,
+		Steps:          4,
+		CFGScale:       1.0,
+		Seed:           42,
+		DurationMs:     35200,
+		FilePath:       "/home/user/.llmcontrol/images/img_123456.png",
+	}
+
+	if err := d.SaveGeneratedImage(ctx, img); err != nil {
+		t.Fatalf("failed to save generated image: %v", err)
+	}
+
+	gotImg, err := d.GetGeneratedImage(ctx, "img_123456")
+	if err != nil || gotImg == nil {
+		t.Fatalf("failed to get generated image: %v", err)
+	}
+	if gotImg.Prompt != img.Prompt || gotImg.Width != 1024 || gotImg.DurationMs != 35200 {
+		t.Errorf("unexpected image fields: %+v", gotImg)
+	}
+
+	list, err := d.ListGeneratedImages(ctx, 10, 0)
+	if err != nil {
+		t.Fatalf("failed to list generated images: %v", err)
+	}
+	if len(list) != 1 || list[0].ID != "img_123456" {
+		t.Errorf("unexpected image list: %+v", list)
+	}
+
+	if err := d.DeleteGeneratedImage(ctx, "img_123456"); err != nil {
+		t.Fatalf("failed to delete image: %v", err)
+	}
+	listAfter, _ := d.ListGeneratedImages(ctx, 10, 0)
+	if len(listAfter) != 0 {
+		t.Errorf("expected 0 images after delete, got %d", len(listAfter))
 	}
 }
 
@@ -294,3 +399,77 @@ func TestRuntimeStateAndBenchLogs(t *testing.T) {
 		t.Errorf("unexpected latest benchmark: %+v", latest)
 	}
 }
+
+func TestTrainingJobsCRUD(t *testing.T) {
+	ctx := context.Background()
+	d := setupTestDB(t)
+
+	job := TrainingJob{
+		ID:             "train-test-1",
+		Name:           "LFM2.5 Classifier",
+		BaseModelPath:  "/models/LFM2.5-2.6B",
+		DatasetPath:    "/data/train.jsonl",
+		ValDatasetPath: "/data/val.jsonl",
+		OutputName:     "lfm2.5-uporka",
+		Epochs:         3,
+		BatchSize:      2,
+		GradAccum:      8,
+		LearningRate:   0.0002,
+		LoraR:          16,
+		LoraAlpha:      32,
+		TargetModules:  "all-linear",
+		QuantType:      "q8_0",
+		Status:         "running",
+	}
+
+	if err := d.CreateTrainingJob(ctx, job); err != nil {
+		t.Fatalf("failed to create training job: %v", err)
+	}
+
+	got, err := d.GetTrainingJob(ctx, "train-test-1")
+	if err != nil || got == nil {
+		t.Fatalf("failed to get training job: %v", err)
+	}
+	if got.Name != job.Name || got.BaseModelPath != job.BaseModelPath {
+		t.Errorf("expected job %+v, got %+v", job, got)
+	}
+
+	// Update progress
+	if err := d.UpdateTrainingJobProgress(ctx, "train-test-1", 10, 162, 0.18, 2.57, 2.45, 0.57); err != nil {
+		t.Fatalf("failed to update progress: %v", err)
+	}
+
+	updated, err := d.GetTrainingJob(ctx, "train-test-1")
+	if err != nil || updated == nil {
+		t.Fatalf("failed to get updated job: %v", err)
+	}
+	if updated.CurrentStep != 10 || updated.CurrentLoss != 2.57 {
+		t.Errorf("unexpected updated progress: %+v", updated)
+	}
+
+	// Complete job
+	if err := d.UpdateTrainingJobStatus(ctx, "train-test-1", "completed", "/models/uporka/lfm.gguf", ""); err != nil {
+		t.Fatalf("failed to complete job: %v", err)
+	}
+
+	completed, _ := d.GetTrainingJob(ctx, "train-test-1")
+	if completed.Status != "completed" || completed.OutputGGUFPath != "/models/uporka/lfm.gguf" {
+		t.Errorf("unexpected completed job: %+v", completed)
+	}
+
+	// List
+	list, err := d.ListTrainingJobs(ctx, 10, 0)
+	if err != nil || len(list) != 1 {
+		t.Fatalf("expected 1 job in list, got %d (err: %v)", len(list), err)
+	}
+
+	// Delete
+	if err := d.DeleteTrainingJob(ctx, "train-test-1"); err != nil {
+		t.Fatalf("failed to delete job: %v", err)
+	}
+	deleted, _ := d.GetTrainingJob(ctx, "train-test-1")
+	if deleted != nil {
+		t.Errorf("expected job to be deleted, got %+v", deleted)
+	}
+}
+

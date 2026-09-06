@@ -271,6 +271,8 @@ func ParseScriptContent(filename, content string) (*ParsedModel, error) {
 					prof.FlashAttn = arg
 				case "safe", "all":
 					prof.Tools = arg
+				case "''", `""`, "none":
+					prof.Tools = ""
 				}
 			}
 		}

@@ -5,8 +5,13 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
+	"mime/multipart"
 	"net/http"
+	"os"
+	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -36,7 +41,7 @@ func NewBot(cfg BotConfig) *Bot {
 		adminID:    cfg.AdminID,
 		db:         cfg.DB,
 		sup:        cfg.Sup,
-		httpClient: &http.Client{Timeout: 30 * time.Second},
+		httpClient: &http.Client{Timeout: 60 * time.Second},
 		baseURL:    fmt.Sprintf("https://api.telegram.org/bot%s", cfg.Token),
 	}
 }
@@ -104,6 +109,46 @@ func (b *Bot) SendMessage(chatID int64, text string, kb *InlineKeyboardMarkup) e
 	return err
 }
 
+func (b *Bot) SendPhoto(chatID int64, photoPath string, caption string) error {
+	file, err := os.Open(photoPath)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+
+	var requestBody bytes.Buffer
+	writer := multipart.NewWriter(&requestBody)
+
+	_ = writer.WriteField("chat_id", strconv.FormatInt(chatID, 10))
+	if caption != "" {
+		_ = writer.WriteField("caption", caption)
+		_ = writer.WriteField("parse_mode", "HTML")
+	}
+
+	part, err := writer.CreateFormFile("photo", filepath.Base(photoPath))
+	if err != nil {
+		return err
+	}
+	if _, err := io.Copy(part, file); err != nil {
+		return err
+	}
+	writer.Close()
+
+	url := fmt.Sprintf("%s/sendPhoto", b.baseURL)
+	req, err := http.NewRequest("POST", url, &requestBody)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+
+	resp, err := b.httpClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	return nil
+}
+
 func (b *Bot) EditMessage(chatID int64, messageID int, text string, kb *InlineKeyboardMarkup) error {
 	payload := map[string]interface{}{
 		"chat_id":    chatID,
@@ -131,6 +176,7 @@ func (b *Bot) SetCommands() error {
 	commands := []BotCommand{
 		{Command: "menu", Description: "Главная панель управления моделями"},
 		{Command: "status", Description: "Быстрый статус системы и активных моделей"},
+		{Command: "imagine", Description: "Сгенерировать изображение по промпту (/imagine prompt)"},
 		{Command: "stopall", Description: "Остановить все запущенные модели"},
 	}
 	_, err := b.apiCall("setMyCommands", map[string]interface{}{"commands": commands})
@@ -160,6 +206,27 @@ func (b *Bot) HandleUpdate(ctx context.Context, u Update) {
 
 func (b *Bot) handleMessage(ctx context.Context, msg *Message) {
 	text := strings.TrimSpace(msg.Text)
+	if strings.HasPrefix(text, "/imagine") {
+		prompt := strings.TrimSpace(strings.TrimPrefix(text, "/imagine"))
+		if prompt == "" {
+			_ = b.SendMessage(msg.Chat.ID, "🎨 <b>Использование:</b>\n<code>/imagine ваш промпт для генерации</code>", nil)
+			return
+		}
+		_ = b.SendMessage(msg.Chat.ID, fmt.Sprintf("🎨 <b>Генерирую изображение на Intel Arc GPU...</b>\n<i>%s</i>", prompt), nil)
+		go func() {
+			bgCtx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+			defer cancel()
+			img, err := b.sup.GenerateImage(bgCtx, supervisor.ImageGenRequest{Prompt: prompt})
+			if err != nil {
+				_ = b.SendMessage(msg.Chat.ID, fmt.Sprintf("❌ <b>Ошибка генерации:</b>\n<code>%s</code>", err.Error()), nil)
+				return
+			}
+			caption := fmt.Sprintf("🎨 <b>%s</b>\n⏱ <i>%.1f сек</i> | 📐 <i>%dx%d</i>", img.Prompt, float64(img.DurationMs)/1000.0, img.Width, img.Height)
+			_ = b.SendPhoto(msg.Chat.ID, img.FilePath, caption)
+		}()
+		return
+	}
+
 	switch text {
 	case "/start", "/menu":
 		txt, kb, _ := b.RenderMainMenu(ctx)
