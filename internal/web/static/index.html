@@ -492,6 +492,8 @@
       </div>
     </div>
     <div class="system-badges">
+      <div class="badge" id="tunnel-badge" style="cursor: pointer; border-color: #2563eb;" onclick="openTunnelModal()" title="Нажмите для настройки обратного туннеля к VPS">☁️ VPS: <span id="tunnel-badge-val" class="badge-val">Отключен</span></div>
+      <div class="badge" id="ondemand-badge" style="cursor: pointer;" onclick="openOnDemandModal()" title="Нажмите для настройки автозапуска и таймера">⚡ On-Demand: <span id="ondemand-badge-val" class="badge-val">5m</span></div>
       <div class="badge">🧠 RAM: <span id="ram-badge" class="badge-val">--</span></div>
       <div class="badge">🎮 VRAM: <span id="vram-badge" class="badge-val">--</span></div>
       <button class="btn-primary" onclick="openDownloaderModal()">📥 HuggingFace</button>
@@ -1148,6 +1150,96 @@
         <button onclick="closeDownloaderModal()">Закрыть</button>
       </div>
     </div>
+  <!-- Tunnel Settings Modal -->
+  <div class="modal-backdrop" id="tunnel-modal" style="display: none;">
+    <div class="modal" style="max-width: 580px;">
+      <div class="modal-header">
+        <h2>☁️ VPS Reverse Tunnel</h2>
+        <button class="close-btn" onclick="closeTunnelModal()">✕</button>
+      </div>
+      <div class="modal-body" style="display: flex; flex-direction: column; gap: 14px;">
+        <div style="font-size: 13px; color: var(--text-muted); line-height: 1.5;">
+          Обратный туннель позволяет вашему удаленному серверу (VPS) безопасно обращаться к локальным LLM и Whisper на домашней машине без открытия входящих портов в интернет.
+        </div>
+
+        <div id="tunnel-status-box" style="padding: 12px 16px; border-radius: 8px; background: #0f172a; border: 1px solid #1e293b; font-size: 13px;">
+          <div>Статус: <b id="tunnel-info-state" style="color: var(--danger);">Отключен</b></div>
+          <div id="tunnel-info-details" style="color: var(--text-muted); font-size: 12px; margin-top: 4px;">Туннель не активен</div>
+        </div>
+
+        <div class="form-group">
+          <label>Целевая модель для привязки:</label>
+          <select id="tunnel-model-select">
+            <option value="">-- Автовыбор (по умолчанию / активная) --</option>
+          </select>
+        </div>
+
+        <div style="display: grid; grid-template-columns: 2fr 1fr; gap: 12px;">
+          <div class="form-group">
+            <label>VPS Host (домен или IP):</label>
+            <input type="text" id="tunnel-host-input" placeholder="vps.example.com" />
+          </div>
+          <div class="form-group">
+            <label>Control Port:</label>
+            <input type="number" id="tunnel-ctl-port-input" value="8443" />
+          </div>
+        </div>
+
+        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px;">
+          <div class="form-group">
+            <label>Remote Bind Port на VPS:</label>
+            <input type="number" id="tunnel-bind-port-input" value="8666" />
+          </div>
+          <div class="form-group">
+            <label>Секретный токен (PSK):</label>
+            <input type="password" id="tunnel-token-input" placeholder="секрет из VPS_TOKEN" />
+          </div>
+        </div>
+
+        <div style="background: #172554; border: 1px solid #1e40af; border-radius: 6px; padding: 10px; font-size: 12px; color: #bfdbfe;">
+          💡 На VPS запустите: <code style="font-family: monospace;">llmctl tunnel-server --listen :8443 --bind 127.0.0.1:8666 --token ВАШ_ТОКЕН</code>
+        </div>
+      </div>
+      <div class="modal-footer" style="display: flex; justify-content: space-between;">
+        <button class="btn-primary" onclick="saveTunnelConfig()">💾 Сохранить</button>
+        <div style="display: flex; gap: 8px;">
+          <button id="tunnel-toggle-btn" class="btn-success" onclick="toggleTunnelMain()">▶ Подключить</button>
+          <button onclick="closeTunnelModal()">Закрыть</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- On-Demand Modal -->
+  <div class="modal-backdrop" id="ondemand-modal" style="display: none;">
+    <div class="modal" style="max-width: 500px;">
+      <div class="modal-header">
+        <h2>⚡ Режим On-Demand (Scale to Zero)</h2>
+        <button class="close-btn" onclick="closeOnDemandModal()">✕</button>
+      </div>
+      <div class="modal-body" style="display: flex; flex-direction: column; gap: 16px;">
+        <div style="font-size: 13px; color: var(--text-muted); line-height: 1.5;">
+          Автоматический запуск модели при первом входящем запросе и выгрузка из видеопамяти Intel Arc при неактивности.
+        </div>
+
+        <label class="checkbox-group" style="cursor: pointer;">
+          <input type="checkbox" id="ondemand-wake-input" checked />
+          <span>⚡ <b>Wake-on-Request</b>: Автозапуск модели при обращении к <code style="font-size: 11px;">/v1/chat/completions</code></span>
+        </label>
+
+        <div class="form-group">
+          <label>Таймаут автоотключения при простое (секунды):</label>
+          <input type="number" id="ondemand-timeout-input" value="300" min="0" step="30" />
+          <div style="font-size: 11px; color: var(--text-muted); margin-top: 4px;">
+            300 сек = 5 минут. 0 = не выгружать модель автоматически.
+          </div>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn-primary" onclick="saveOnDemandConfig()">Сохранить</button>
+        <button onclick="closeOnDemandModal()">Закрыть</button>
+      </div>
+    </div>
   </div>
 
   <script>
@@ -1255,19 +1347,266 @@
       } catch (err) {
         console.error("Failed to load models:", err);
       }
-    }
+    let currentTunnelStatus = null;
+    let currentOnDemand = { wake_on_request: true, idle_timeout_seconds: 300 };
 
     async function loadAll() {
       try {
-        const [statusRes, modelsRes] = await Promise.all([
+        const [statusRes, modelsRes, tunnelRes, ondemandRes] = await Promise.all([
           fetch('/api/status').then(r => r.json()),
-          fetch('/api/models').then(r => r.json())
+          fetch('/api/models').then(r => r.json()),
+          fetch('/api/tunnel/status').then(r => r.json()).catch(() => null),
+          fetch('/api/ondemand').then(r => r.json()).catch(() => null)
         ]);
         allModels = modelsRes;
+        if (tunnelRes) {
+          currentTunnelStatus = tunnelRes;
+          updateTunnelUI(tunnelRes);
+        }
+        if (ondemandRes) {
+          currentOnDemand = ondemandRes;
+          updateOnDemandUI(ondemandRes);
+        }
         renderModels(modelsRes);
         applyStatus(statusRes);
       } catch (err) {
         console.error("Failed to load status/models:", err);
+      }
+    }
+
+    function updateTunnelUI(status) {
+      if (!status) return;
+      const badgeVal = document.getElementById('tunnel-badge-val');
+      if (badgeVal) {
+        if (status.is_active && status.state === 'connected') {
+          badgeVal.style.color = 'var(--success)';
+          const target = status.target_model_id || 'active';
+          badgeVal.innerText = `🟢 ${status.vps_host || 'VPS'} (${target})`;
+        } else if (status.is_active && status.state === 'connecting') {
+          badgeVal.style.color = 'var(--warning)';
+          badgeVal.innerText = `🟡 Подключение...`;
+        } else if (status.state === 'error') {
+          badgeVal.style.color = 'var(--danger)';
+          badgeVal.innerText = `🔴 Ошибка`;
+        } else {
+          badgeVal.style.color = 'var(--text-muted)';
+          badgeVal.innerText = `Отключен`;
+        }
+      }
+
+      const infoState = document.getElementById('tunnel-info-state');
+      const infoDetails = document.getElementById('tunnel-info-details');
+      const toggleBtn = document.getElementById('tunnel-toggle-btn');
+      if (infoState && infoDetails && toggleBtn) {
+        if (status.is_active && status.state === 'connected') {
+          infoState.innerText = `🟢 Подключен к ${status.vps_host}:${status.vps_tunnel_port}`;
+          infoState.style.color = 'var(--success)';
+          infoDetails.innerText = `Модель: ${status.target_model_id || 'auto'} | Входящие: ${(status.bytes_in / 1024).toFixed(1)} KB | Исходящие: ${(status.bytes_out / 1024).toFixed(1)} KB | Активных потоков: ${status.active_streams || 0}`;
+          toggleBtn.innerText = `⏹ Отключить`;
+          toggleBtn.className = `btn-danger`;
+        } else if (status.is_active && status.state === 'connecting') {
+          infoState.innerText = `🟡 Подключение к ${status.vps_host}...`;
+          infoState.style.color = 'var(--warning)';
+          infoDetails.innerText = `Ожидание ответа от VPS...`;
+          toggleBtn.innerText = `⏹ Отмена`;
+          toggleBtn.className = `btn-danger`;
+        } else if (status.state === 'error') {
+          infoState.innerText = `🔴 Ошибка: ${status.last_error || 'соединение разорвано'}`;
+          infoState.style.color = 'var(--danger)';
+          infoDetails.innerText = `Проверьте хост, порт и токен VPS`;
+          toggleBtn.innerText = `▶ Повторить`;
+          toggleBtn.className = `btn-success`;
+        } else {
+          infoState.innerText = `Отключен`;
+          infoState.style.color = 'var(--danger)';
+          infoDetails.innerText = `Туннель не активен`;
+          toggleBtn.innerText = `▶ Подключить`;
+          toggleBtn.className = `btn-success`;
+        }
+      }
+    }
+
+    function updateOnDemandUI(ondemand) {
+      if (!ondemand) return;
+      const badgeVal = document.getElementById('ondemand-badge-val');
+      if (badgeVal) {
+        if (!ondemand.wake_on_request) {
+          badgeVal.innerText = "Выкл";
+          badgeVal.style.color = "var(--text-muted)";
+        } else if (ondemand.idle_timeout_seconds > 0) {
+          const mins = Math.round(ondemand.idle_timeout_seconds / 60);
+          badgeVal.innerText = `${mins}m auto-stop`;
+          badgeVal.style.color = "var(--primary)";
+        } else {
+          badgeVal.innerText = "Wake (без автостопа)";
+          badgeVal.style.color = "var(--primary)";
+        }
+      }
+    }
+
+    async function toggleTunnelForModel(modelId) {
+      if (currentTunnelStatus?.is_active && currentTunnelStatus?.target_model_id === modelId) {
+        try {
+          const res = await fetch('/api/tunnel/stop', { method: 'POST' }).then(r => r.json());
+          currentTunnelStatus = res;
+          updateTunnelUI(res);
+          renderModels(allModels);
+        } catch (e) {
+          alert("Ошибка остановки туннеля: " + e.message);
+        }
+      } else {
+        if (!currentTunnelStatus?.vps_host) {
+          openTunnelModal(modelId);
+          return;
+        }
+        const profSelect = document.getElementById(`prof-${modelId}`);
+        const profile = profSelect ? profSelect.value : 'default';
+        try {
+          const res = await fetch('/api/tunnel/start', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ model_id: modelId, profile: profile })
+          }).then(r => r.json());
+          if (res.error) {
+            alert("Ошибка запуска туннеля: " + res.error);
+          } else {
+            currentTunnelStatus = res;
+            updateTunnelUI(res);
+            renderModels(allModels);
+          }
+        } catch (e) {
+          alert("Ошибка запуска туннеля: " + e.message);
+        }
+      }
+    }
+
+    function openTunnelModal(preselectModelId) {
+      const modal = document.getElementById('tunnel-modal');
+      if (!modal) return;
+
+      const sel = document.getElementById('tunnel-model-select');
+      if (sel) {
+        sel.innerHTML = '<option value="">-- Автовыбор (по умолчанию / активная) --</option>';
+        (allModels || []).filter(m => m.model_type !== 'diffusion').forEach(m => {
+          const opt = document.createElement('option');
+          opt.value = m.id;
+          opt.innerText = `${m.name} (${m.id})`;
+          if (preselectModelId && preselectModelId === m.id) {
+            opt.selected = true;
+          } else if (currentTunnelStatus?.target_model_id === m.id) {
+            opt.selected = true;
+          }
+          sel.appendChild(opt);
+        });
+      }
+
+      if (currentTunnelStatus) {
+        if (currentTunnelStatus.vps_host) document.getElementById('tunnel-host-input').value = currentTunnelStatus.vps_host;
+        if (currentTunnelStatus.vps_tunnel_port) document.getElementById('tunnel-ctl-port-input').value = currentTunnelStatus.vps_tunnel_port;
+        if (currentTunnelStatus.vps_remote_port) document.getElementById('tunnel-bind-port-input').value = currentTunnelStatus.vps_remote_port;
+        updateTunnelUI(currentTunnelStatus);
+      }
+      modal.style.display = 'flex';
+    }
+
+    function closeTunnelModal() {
+      const modal = document.getElementById('tunnel-modal');
+      if (modal) modal.style.display = 'none';
+    }
+
+    async function saveTunnelConfig() {
+      const host = document.getElementById('tunnel-host-input').value.trim();
+      const ctlPort = parseInt(document.getElementById('tunnel-ctl-port-input').value) || 8443;
+      const bindPort = parseInt(document.getElementById('tunnel-bind-port-input').value) || 8666;
+      const token = document.getElementById('tunnel-token-input').value.trim();
+
+      try {
+        const res = await fetch('/api/tunnel/config', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            vps_host: host,
+            vps_tunnel_port: ctlPort,
+            vps_remote_port: bindPort,
+            vps_token: token
+          })
+        }).then(r => r.json());
+        currentTunnelStatus = res;
+        updateTunnelUI(res);
+        alert("Настройки туннеля сохранены!");
+      } catch (e) {
+        alert("Ошибка сохранения: " + e.message);
+      }
+    }
+
+    async function toggleTunnelMain() {
+      if (currentTunnelStatus?.is_active) {
+        try {
+          const res = await fetch('/api/tunnel/stop', { method: 'POST' }).then(r => r.json());
+          currentTunnelStatus = res;
+          updateTunnelUI(res);
+          renderModels(allModels);
+        } catch (e) {
+          alert("Ошибка остановки: " + e.message);
+        }
+      } else {
+        const host = document.getElementById('tunnel-host-input').value.trim();
+        if (!host) {
+          alert("Пожалуйста, укажите VPS Host");
+          return;
+        }
+        await saveTunnelConfig();
+        const modelId = document.getElementById('tunnel-model-select').value;
+        try {
+          const res = await fetch('/api/tunnel/start', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ model_id: modelId, profile: '' })
+          }).then(r => r.json());
+          if (res.error) {
+            alert("Ошибка запуска: " + res.error);
+          } else {
+            currentTunnelStatus = res;
+            updateTunnelUI(res);
+            renderModels(allModels);
+          }
+        } catch (e) {
+          alert("Ошибка запуска: " + e.message);
+        }
+      }
+    }
+
+    function openOnDemandModal() {
+      const modal = document.getElementById('ondemand-modal');
+      if (!modal) return;
+      document.getElementById('ondemand-wake-input').checked = currentOnDemand.wake_on_request;
+      document.getElementById('ondemand-timeout-input').value = currentOnDemand.idle_timeout_seconds;
+      modal.style.display = 'flex';
+    }
+
+    function closeOnDemandModal() {
+      const modal = document.getElementById('ondemand-modal');
+      if (modal) modal.style.display = 'none';
+    }
+
+    async function saveOnDemandConfig() {
+      const wake = document.getElementById('ondemand-wake-input').checked;
+      const timeout = parseInt(document.getElementById('ondemand-timeout-input').value) || 0;
+
+      try {
+        const res = await fetch('/api/ondemand', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            wake_on_request: wake,
+            idle_timeout_seconds: timeout
+          })
+        }).then(r => r.json());
+        currentOnDemand = res;
+        updateOnDemandUI(res);
+        closeOnDemandModal();
+      } catch (e) {
+        alert("Ошибка сохранения: " + e.message);
       }
     }
 
@@ -1282,6 +1621,7 @@
         const statusText = isRunning ? 'RUNNING' : (isStarting ? 'STARTING...' : 'STOPPED');
         const activeProfName = m.runtime?.profile_name || m.default_profile || (m.profiles?.[0]?.name) || 'default';
         const defaultProf = (m.profiles || []).find(p => p.name === activeProfName) || m.profiles?.[0];
+        const isTunnelTarget = currentTunnelStatus?.is_active && currentTunnelStatus?.target_model_id === m.id;
 
         const card = document.createElement('div');
         card.id = `card-${m.id}`;
@@ -1322,6 +1662,10 @@
             </div>
             <div class="card-top-right">
               <span class="status-pill ${isDiffusion ? 'status-stopped' : statusClass}" id="pill-${m.id}">${isDiffusion ? 'DIFFUSION' : statusText}</span>
+              ${!isDiffusion ? `
+              <button class="card-action-icon" style="${isTunnelTarget ? 'color: #10b981; font-weight: bold; border: 1px solid #10b981; border-radius: 4px; padding: 1px 4px;' : ''}" onclick="toggleTunnelForModel('${m.id}')" title="${isTunnelTarget ? 'Туннель на VPS активен для этой модели (клик — отключить)' : 'Активировать обратный туннель на VPS для этой модели'}">
+                ☁️ ${isTunnelTarget ? 'VPS ✓' : 'VPS'}
+              </button>` : ''}
               <button class="card-action-icon" onclick="openEditModal('${m.id}')" title="Редактировать модель и профили">⚙️ Настройки</button>
               <button class="card-action-icon" onclick="deleteModel('${m.id}')" title="Удалить">🗑</button>
             </div>

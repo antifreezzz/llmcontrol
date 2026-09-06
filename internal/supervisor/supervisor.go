@@ -385,13 +385,13 @@ func (s *Supervisor) StartModel(ctx context.Context, modelID, profileName string
 		}
 	}
 
-	// Healthcheck loop (up to 60s)
+	// Healthcheck loop (up to 180s for large 27B+ models)
 	go func() {
 		baseURL := fmt.Sprintf("http://127.0.0.1:%d", port)
 		client := &http.Client{Timeout: 2 * time.Second}
 		start := time.Now()
 
-		for time.Since(start) < 60*time.Second {
+		for time.Since(start) < 180*time.Second {
 			if cmd.ProcessState != nil && cmd.ProcessState.Exited() {
 				return
 			}

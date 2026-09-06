@@ -9,14 +9,22 @@ import (
 )
 
 type Config struct {
-	HTTPHost        string `json:"http_host"`
-	HTTPPort        int    `json:"http_port"`
-	DBPath          string `json:"db_path"`
-	LogDir          string `json:"log_dir"`
-	ModelsDir       string `json:"models_dir"`
-	ExclusiveMode   bool   `json:"exclusive_mode"`
-	TelegramToken   string `json:"telegram_token"`
-	TelegramAdminID int64  `json:"telegram_admin_id"`
+	HTTPHost           string `json:"http_host"`
+	HTTPPort           int    `json:"http_port"`
+	DBPath             string `json:"db_path"`
+	LogDir             string `json:"log_dir"`
+	ModelsDir          string `json:"models_dir"`
+	ExclusiveMode      bool   `json:"exclusive_mode"`
+	TelegramToken      string `json:"telegram_token"`
+	TelegramAdminID    int64  `json:"telegram_admin_id"`
+	VPSHost            string `json:"vps_host"`
+	VPSTunnelPort      int    `json:"vps_tunnel_port"`
+	VPSToken           string `json:"vps_token"`
+	VPSRemotePort      int    `json:"vps_remote_port"`
+	WhisperBinaryPath  string `json:"whisper_binary_path"`
+	WhisperModelPath   string `json:"whisper_model_path"`
+	IdleTimeoutSeconds int    `json:"idle_timeout_seconds"`
+	WakeOnRequest      bool   `json:"wake_on_request"`
 }
 
 func DefaultConfig() Config {
@@ -24,14 +32,22 @@ func DefaultConfig() Config {
 	baseDir := filepath.Join(home, ".llmcontrol")
 	modelsDir := filepath.Join(home, ".lmstudio", "models")
 	return Config{
-		HTTPHost:        "0.0.0.0",
-		HTTPPort:        8666,
-		DBPath:          filepath.Join(baseDir, "llmcontrol.db"),
-		LogDir:          filepath.Join(baseDir, "logs"),
-		ModelsDir:       modelsDir,
-		ExclusiveMode:   true,
-		TelegramToken:   "",
-		TelegramAdminID: 0,
+		HTTPHost:           "0.0.0.0",
+		HTTPPort:           8666,
+		DBPath:             filepath.Join(baseDir, "llmcontrol.db"),
+		LogDir:             filepath.Join(baseDir, "logs"),
+		ModelsDir:          modelsDir,
+		ExclusiveMode:      true,
+		TelegramToken:      "",
+		TelegramAdminID:    0,
+		VPSHost:            "",
+		VPSTunnelPort:      8443,
+		VPSToken:           "",
+		VPSRemotePort:      8666,
+		WhisperBinaryPath:  "/home/antifreezzz/whisper.cpp/build-vk/bin/whisper-cli",
+		WhisperModelPath:   "/home/antifreezzz/whisper.cpp/models/ggml-tiny.bin",
+		IdleTimeoutSeconds: 300,
+		WakeOnRequest:      true,
 	}
 }
 
@@ -95,6 +111,36 @@ func LoadConfig(customPath string) (Config, error) {
 	}
 	if envModelsDir := os.Getenv("MODELS_DIR"); envModelsDir != "" {
 		cfg.ModelsDir = envModelsDir
+	}
+	if envVPSHost := os.Getenv("VPS_HOST"); envVPSHost != "" {
+		cfg.VPSHost = envVPSHost
+	}
+	if envVPSTunnelPort := os.Getenv("VPS_TUNNEL_PORT"); envVPSTunnelPort != "" {
+		if p, err := strconv.Atoi(envVPSTunnelPort); err == nil && p > 0 {
+			cfg.VPSTunnelPort = p
+		}
+	}
+	if envVPSToken := os.Getenv("VPS_TOKEN"); envVPSToken != "" {
+		cfg.VPSToken = envVPSToken
+	}
+	if envVPSRemotePort := os.Getenv("VPS_REMOTE_PORT"); envVPSRemotePort != "" {
+		if p, err := strconv.Atoi(envVPSRemotePort); err == nil && p > 0 {
+			cfg.VPSRemotePort = p
+		}
+	}
+	if envWhisperBin := os.Getenv("WHISPER_BINARY_PATH"); envWhisperBin != "" {
+		cfg.WhisperBinaryPath = envWhisperBin
+	}
+	if envWhisperModel := os.Getenv("WHISPER_MODEL_PATH"); envWhisperModel != "" {
+		cfg.WhisperModelPath = envWhisperModel
+	}
+	if envIdleTimeout := os.Getenv("IDLE_TIMEOUT_SECONDS"); envIdleTimeout != "" {
+		if s, err := strconv.Atoi(envIdleTimeout); err == nil && s >= 0 {
+			cfg.IdleTimeoutSeconds = s
+		}
+	}
+	if envWake := os.Getenv("WAKE_ON_REQUEST"); envWake != "" {
+		cfg.WakeOnRequest = strings.ToLower(envWake) == "true" || envWake == "1"
 	}
 
 	return cfg, nil

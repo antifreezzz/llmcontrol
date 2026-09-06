@@ -12,6 +12,7 @@ import (
 
 	"github.com/antifreezzz/llmcontrol/internal/db"
 	"github.com/antifreezzz/llmcontrol/internal/supervisor"
+	"github.com/antifreezzz/llmcontrol/internal/tunnel"
 )
 
 func setupTestAPI(t *testing.T) (*Server, *db.DB, *supervisor.Supervisor) {
@@ -316,6 +317,119 @@ func TestAPITrainingJobs(t *testing.T) {
 		t.Errorf("expected active=false, got: %+v", activeResp)
 	}
 }
+
+func TestAPIOpenAIModels(t *testing.T) {
+	ctx := context.Background()
+	srv, database, _ := setupTestAPI(t)
+
+	_ = database.SaveEngine(ctx, db.Engine{ID: "e1", Name: "E1"})
+	_ = database.SaveModel(ctx, db.Model{ID: "gemma4", Name: "Gemma 4", EngineID: "e1"})
+
+	req := httptest.NewRequest("GET", "/v1/models", nil)
+	rec := httptest.NewRecorder()
+	srv.Router().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	var res struct {
+		Object string `json:"object"`
+		Data   []struct {
+			ID string `json:"id"`
+		} `json:"data"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&res); err != nil {
+		t.Fatalf("decode failed: %v", err)
+	}
+	if len(res.Data) != 1 || res.Data[0].ID != "gemma4" {
+		t.Fatalf("unexpected models list: %+v", res)
+	}
+}
+
+func TestAPITunnelEndpoints(t *testing.T) {
+	srv, _, _ := setupTestAPI(t)
+
+	// Status with nil manager
+	req := httptest.NewRequest("GET", "/api/tunnel/status", nil)
+	rec := httptest.NewRecorder()
+	srv.Router().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rec.Code)
+	}
+
+	// Status with real manager
+	tm := tunnel.NewClientManager("127.0.0.1:8666", "vps.example.com", 8443, 8666, "token123")
+	srv.SetTunnelManager(tm)
+
+	req2 := httptest.NewRequest("GET", "/api/tunnel/status", nil)
+	rec2 := httptest.NewRecorder()
+	srv.Router().ServeHTTP(rec2, req2)
+	if rec2.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rec2.Code)
+	}
+
+	var st tunnel.Status
+	if err := json.NewDecoder(rec2.Body).Decode(&st); err != nil {
+		t.Fatalf("decode status failed: %v", err)
+	}
+	if st.VPSHost != "vps.example.com" || st.State != "disconnected" {
+		t.Fatalf("unexpected status: %+v", st)
+	}
+
+	// Config update
+	cfgBody := `{"vps_host":"new-vps.com","vps_tunnel_port":9443,"vps_token":"newtok"}`
+	req3 := httptest.NewRequest("POST", "/api/tunnel/config", strings.NewReader(cfgBody))
+	rec3 := httptest.NewRecorder()
+	srv.Router().ServeHTTP(rec3, req3)
+	if rec3.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rec3.Code)
+	}
+	if tm.GetStatus().VPSHost != "new-vps.com" || tm.GetStatus().VPSTunnelPort != 9443 {
+		t.Fatalf("update config failed: %+v", tm.GetStatus())
+	}
+}
+
+func TestAPIOnDemandEndpoints(t *testing.T) {
+	srv, _, _ := setupTestAPI(t)
+	srv.SetOnDemandConfig(true, 300)
+
+	// GET /api/ondemand
+	req := httptest.NewRequest("GET", "/api/ondemand", nil)
+	rec := httptest.NewRecorder()
+	srv.Router().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rec.Code)
+	}
+
+	var resp struct {
+		WakeOnRequest      bool `json:"wake_on_request"`
+		IdleTimeoutSeconds int  `json:"idle_timeout_seconds"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode failed: %v", err)
+	}
+	if !resp.WakeOnRequest || resp.IdleTimeoutSeconds != 300 {
+		t.Fatalf("unexpected ondemand config: %+v", resp)
+	}
+
+	// POST /api/ondemand
+	updateBody := `{"wake_on_request":false,"idle_timeout_seconds":600}`
+	req2 := httptest.NewRequest("POST", "/api/ondemand", strings.NewReader(updateBody))
+	rec2 := httptest.NewRecorder()
+	srv.Router().ServeHTTP(rec2, req2)
+	if rec2.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rec2.Code)
+	}
+
+	if err := json.NewDecoder(rec2.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode failed: %v", err)
+	}
+	if resp.WakeOnRequest || resp.IdleTimeoutSeconds != 600 {
+		t.Fatalf("update ondemand failed: %+v", resp)
+	}
+}
+
 
 
 
