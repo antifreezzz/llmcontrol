@@ -14,6 +14,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -37,8 +38,13 @@ type Server struct {
 	wakeOnRequest      bool
 	idleTimeoutSeconds int
 	lastActivityUnix   int64
-	idleTicker         *time.Ticker
-	idleStopChan       chan struct{}
+	// Per-model activity bookkeeping. Traffic sent straight to the model port
+	// never reaches the daemon, so each model is tracked on its own signals.
+	activityMu    sync.Mutex
+	modelActivity map[string]int64
+	modelWorkSig  map[string]string
+	idleTicker    *time.Ticker
+	idleStopChan  chan struct{}
 }
 
 type StatusResponse struct {
@@ -65,6 +71,8 @@ func NewServer(database *db.DB, sup *supervisor.Supervisor, dl *downloader.Manag
 		idleTimeoutSeconds: 300,
 		lastActivityUnix:   time.Now().Unix(),
 		idleStopChan:       make(chan struct{}),
+		modelActivity:      make(map[string]int64),
+		modelWorkSig:       make(map[string]string),
 	}
 	s.registerRoutes()
 	s.startIdleChecker()
@@ -86,6 +94,44 @@ func (s *Server) SetOnDemandConfig(wake bool, idleSeconds int) {
 
 func (s *Server) SetConfigPath(p string) {
 	s.configPath = p
+}
+
+// markModelActivity records that modelID served something just now.
+func (s *Server) markModelActivity(modelID string) {
+	if modelID == "" {
+		return
+	}
+	s.activityMu.Lock()
+	s.modelActivity[modelID] = time.Now().Unix()
+	s.activityMu.Unlock()
+}
+
+// modelActivityAt returns the last activity stamp recorded for modelID.
+func (s *Server) modelActivityAt(modelID string) (int64, bool) {
+	s.activityMu.Lock()
+	defer s.activityMu.Unlock()
+	v, ok := s.modelActivity[modelID]
+	return v, ok
+}
+
+// clearModelActivity forgets a model that is no longer running.
+func (s *Server) clearModelActivity(modelID string) {
+	s.activityMu.Lock()
+	delete(s.modelActivity, modelID)
+	delete(s.modelWorkSig, modelID)
+	s.activityMu.Unlock()
+}
+
+// modelWorkChanged stores the llama-server state signature for modelID and
+// reports whether the server did anything since the previous observation. This
+// is what makes a short request on the model port visible to the idle checker
+// even when it finished between two polls.
+func (s *Server) modelWorkChanged(modelID, sig string) bool {
+	s.activityMu.Lock()
+	defer s.activityMu.Unlock()
+	prev, ok := s.modelWorkSig[modelID]
+	s.modelWorkSig[modelID] = sig
+	return ok && prev != sig
 }
 
 func (s *Server) Close() {
@@ -485,11 +531,11 @@ func (s *Server) handleStartModel(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Starting a model counts as activity: lastActivityUnix is initialised at
-	// daemon startup and refreshed only by proxied requests and STT calls, so
-	// without this the idle checker auto-stops a freshly started model as soon
-	// as the daemon uptime exceeds idle_timeout_seconds.
+	// Starting a model counts as activity, otherwise the idle checker would
+	// auto-stop a freshly started model as soon as the daemon uptime exceeds
+	// idle_timeout_seconds.
 	atomic.StoreInt64(&s.lastActivityUnix, time.Now().Unix())
+	s.markModelActivity(id)
 
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]string{"status": "starting", "model_id": id})
@@ -502,6 +548,7 @@ func (s *Server) handleStopModel(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
+	s.clearModelActivity(id)
 	_ = json.NewEncoder(w).Encode(map[string]string{"status": "stopped", "model_id": id})
 }
 
@@ -1164,6 +1211,9 @@ func (s *Server) handleOpenAIProxy(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Count the request against the model that serves it.
+	s.markModelActivity(desiredModelID)
+
 	// Update last activity timestamp for idle auto-stop
 	atomic.StoreInt64(&s.lastActivityUnix, time.Now().Unix())
 
@@ -1191,21 +1241,44 @@ func (s *Server) startIdleChecker() {
 				if timeout <= 0 {
 					continue
 				}
-				last := atomic.LoadInt64(&s.lastActivityUnix)
-				if last == 0 {
+
+				active, err := s.db.GetActiveRuntimeStates(context.Background())
+				if err != nil || len(active) == 0 {
 					continue
 				}
-				if time.Now().Unix()-last > int64(timeout) {
-					active, err := s.db.GetActiveRuntimeStates(context.Background())
-					if err == nil && len(active) > 0 {
-						for _, act := range active {
-							if act.Status == "running" {
-								log.Printf("[ondemand] idle timeout expired (%ds without requests), auto-stopping model %s...", timeout, act.ModelID)
-								_ = s.supervisor.StopModel(context.Background(), act.ModelID)
+
+				for _, act := range active {
+					if act.Status != "running" || act.Port <= 0 {
+						continue
+					}
+
+					// Traffic on the model port never reaches the daemon proxy, so ask
+					// llama-server itself what it is doing: work in progress or any
+					// state change counts as activity.
+					if sig, busy, ok := s.supervisor.ServerActivity(context.Background(), act.Port); ok {
+						if busy || s.modelWorkChanged(act.ModelID, sig) {
+							s.markModelActivity(act.ModelID)
+						}
+					}
+
+					last, known := s.modelActivityAt(act.ModelID)
+					if !known {
+						switch {
+						case act.StartedAt != nil:
+							last, known = act.StartedAt.Unix(), true
+						default:
+							if g := atomic.LoadInt64(&s.lastActivityUnix); g > 0 {
+								last, known = g, true
 							}
 						}
-						atomic.StoreInt64(&s.lastActivityUnix, 0)
 					}
+					if !known || time.Now().Unix()-last <= int64(timeout) {
+						continue
+					}
+
+					log.Printf("[ondemand] idle timeout expired (%ds without activity) for model %s, auto-stopping...", timeout, act.ModelID)
+					_ = s.supervisor.StopModel(context.Background(), act.ModelID)
+					s.clearModelActivity(act.ModelID)
 				}
 			}
 		}

@@ -46,23 +46,23 @@ type SupervisorConfig struct {
 }
 
 type Supervisor struct {
-	db             *db.DB
-	logDir         string
-	host           string
-	exclusiveMode  bool
-	mu             sync.Mutex
-	runningCmds    map[string]*exec.Cmd
-	eventChans     map[chan string]struct{}
-	eventMu        sync.RWMutex
-	sampleMu         sync.Mutex
-	lastSample       slotSample
-	liveTPS          float64
-	metricsMu        sync.RWMutex
-	lastMetrics      *LLMSlotMetrics
-	metricsUpdated   time.Time
-	activeDiffJob    *DiffusionJob
-	activeDiffMu     sync.RWMutex
-	activeDiffCancel context.CancelFunc
+	db                *db.DB
+	logDir            string
+	host              string
+	exclusiveMode     bool
+	mu                sync.Mutex
+	runningCmds       map[string]*exec.Cmd
+	eventChans        map[chan string]struct{}
+	eventMu           sync.RWMutex
+	sampleMu          sync.Mutex
+	lastSample        slotSample
+	liveTPS           float64
+	metricsMu         sync.RWMutex
+	lastMetrics       *LLMSlotMetrics
+	metricsUpdated    time.Time
+	activeDiffJob     *DiffusionJob
+	activeDiffMu      sync.RWMutex
+	activeDiffCancel  context.CancelFunc
 	activeTrainJob    *db.TrainingJob
 	activeTrainMu     sync.RWMutex
 	activeTrainCancel context.CancelFunc
@@ -996,4 +996,53 @@ func (s *Supervisor) fallbackSlotMetrics() *LLMSlotMetrics {
 		return &res
 	}
 	return &LLMSlotMetrics{Phase: "idle", CacheHitPct: 100}
+}
+
+// ServerActivity reports whether the llama-server on the given port is
+// processing anything right now and returns a signature that changes whenever
+// the server does work. The idle checker uses it so that traffic which never
+// passes through the daemon proxy (the built-in WebUI on the model port, direct
+// API clients) still counts as activity.
+func (s *Supervisor) ServerActivity(ctx context.Context, port int) (sig string, busy bool, ok bool) {
+	if port <= 0 {
+		return "", false, false
+	}
+
+	url := fmt.Sprintf("http://%s:%d/slots", s.host, port)
+	client := &http.Client{Timeout: 300 * time.Millisecond}
+	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
+	if err != nil {
+		return "", false, false
+	}
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", false, false
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return "", false, false
+	}
+
+	var slots []llamaSlotItem
+	if err := json.NewDecoder(resp.Body).Decode(&slots); err != nil {
+		return "", false, false
+	}
+
+	var b strings.Builder
+	for i := range slots {
+		sl := &slots[i]
+		if sl.IsProcessing {
+			busy = true
+		}
+		decoded := -1
+		if len(sl.NextToken) > 0 && sl.NextToken[0].HasNextToken {
+			decoded = sl.NextToken[0].NDecoded
+		}
+		fmt.Fprintf(&b, "%d:%t:%d:%d:%d:%d:%d|", sl.ID, sl.IsProcessing, sl.IDTask,
+			sl.NPromptTokens, sl.NPromptTokensProcessed, sl.NPromptTokensCache, decoded)
+	}
+
+	return b.String(), busy, true
 }
