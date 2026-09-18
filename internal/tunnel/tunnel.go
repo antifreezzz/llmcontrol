@@ -78,9 +78,8 @@ func (m *ClientManager) GetStatus() Status {
 	return m.status
 }
 
-func (m *ClientManager) UpdateConfig(host string, tunnelPort, remotePort int, token string) {
+func (m *ClientManager) UpdateConfig(host string, tunnelPort, remotePort int, token string, targetModelID ...string) {
 	m.mu.Lock()
-	defer m.mu.Unlock()
 	if host != "" {
 		m.status.VPSHost = host
 	}
@@ -92,6 +91,48 @@ func (m *ClientManager) UpdateConfig(host string, tunnelPort, remotePort int, to
 	}
 	if token != "" {
 		m.vpsToken = token
+	}
+	if len(targetModelID) > 0 {
+		m.status.TargetModelID = targetModelID[0]
+	}
+	if len(targetModelID) > 1 {
+		m.status.TargetProfile = targetModelID[1]
+	}
+	isActive := m.status.IsActive
+	targetModel := m.status.TargetModelID
+	targetProfile := m.status.TargetProfile
+	cb := m.onStateChange
+	curr := m.status
+	m.mu.Unlock()
+
+	if cb != nil {
+		cb(curr)
+	}
+
+	if isActive {
+		_ = m.Start(targetModel, targetProfile)
+	}
+}
+
+func (m *ClientManager) SetTargetModel(modelID, profile string) {
+	m.mu.Lock()
+	m.status.TargetModelID = modelID
+	if profile != "" {
+		m.status.TargetProfile = profile
+	}
+	isActive := m.status.IsActive
+	targetModel := m.status.TargetModelID
+	targetProfile := m.status.TargetProfile
+	cb := m.onStateChange
+	curr := m.status
+	m.mu.Unlock()
+
+	if cb != nil {
+		cb(curr)
+	}
+
+	if isActive {
+		_ = m.Start(targetModel, targetProfile)
 	}
 }
 

@@ -76,7 +76,7 @@ func main() {
 
 	switch command {
 	case "daemon", "server", "run":
-		runDaemon(cfg, database, sup)
+		runDaemon(cfg, database, sup, configPath)
 
 	case "mcp":
 		if err := mcp.RunStdio(database, sup); err != nil {
@@ -426,7 +426,7 @@ func main() {
 	}
 }
 
-func runDaemon(cfg config.Config, database *db.DB, sup *supervisor.Supervisor) {
+func runDaemon(cfg config.Config, database *db.DB, sup *supervisor.Supervisor, configPath string) {
 	fmt.Println("🚀 Starting LLM Control Center Daemon...")
 	fmt.Printf("📁 Database: %s\n", cfg.DBPath)
 	fmt.Printf("📁 Models Dir: %s\n", cfg.ModelsDir)
@@ -437,6 +437,7 @@ func runDaemon(cfg config.Config, database *db.DB, sup *supervisor.Supervisor) {
 
 	dlMgr := downloader.NewManager(cfg.ModelsDir, database)
 	srv := api.NewServer(database, sup, dlMgr, web.StaticFS())
+	srv.SetConfigPath(configPath)
 
 	// Initialize Whisper STT
 	sttSvc := stt.NewService(stt.Config{
@@ -453,7 +454,19 @@ func runDaemon(cfg config.Config, database *db.DB, sup *supervisor.Supervisor) {
 		cfg.VPSRemotePort,
 		cfg.VPSToken,
 	)
+	if cfg.VPSTargetModel != "" {
+		tunnelMgr.SetTargetModel(cfg.VPSTargetModel, "default")
+	}
 	srv.SetTunnelManager(tunnelMgr)
+
+	if cfg.VPSHost != "" {
+		targetModel := cfg.VPSTargetModel
+		if err := tunnelMgr.Start(targetModel, "default"); err != nil {
+			fmt.Printf("⚠️ Failed to auto-start tunnel: %v\n", err)
+		} else {
+			fmt.Printf("☁️ Reverse tunnel auto-started to %s:%d (remote: %d, target: %s)\n", cfg.VPSHost, cfg.VPSTunnelPort, cfg.VPSRemotePort, targetModel)
+		}
+	}
 
 	// Configure On-Demand Wake and Idle Auto-Stop
 	srv.SetOnDemandConfig(cfg.WakeOnRequest, cfg.IdleTimeoutSeconds)
