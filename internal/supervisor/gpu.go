@@ -9,7 +9,18 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
+)
+
+var (
+	sysStatusMu        sync.RWMutex
+	cachedSysStatus    SystemStatus
+	sysStatusTime      time.Time
+	intelDrmOnce       sync.Once
+	cachedCard         string
+	cachedTotalVRAM    int64
+	cachedIntelGPUName string
 )
 
 type SystemStatus struct {
@@ -32,6 +43,20 @@ type gpuMetrics struct {
 }
 
 func GetSystemStatus() SystemStatus {
+	sysStatusMu.RLock()
+	if time.Since(sysStatusTime) < 2*time.Second && cachedSysStatus.RAMTotalMB > 0 {
+		res := cachedSysStatus
+		sysStatusMu.RUnlock()
+		return res
+	}
+	sysStatusMu.RUnlock()
+
+	sysStatusMu.Lock()
+	defer sysStatusMu.Unlock()
+	if time.Since(sysStatusTime) < 2*time.Second && cachedSysStatus.RAMTotalMB > 0 {
+		return cachedSysStatus
+	}
+
 	stat := SystemStatus{}
 
 	// 1. Read /proc/meminfo for System RAM
@@ -96,6 +121,8 @@ func GetSystemStatus() SystemStatus {
 		stat.VRAMUsagePct = float64(stat.VRAMUsedMB) / float64(stat.VRAMTotalMB) * 100
 	}
 
+	cachedSysStatus = stat
+	sysStatusTime = time.Now()
 	return stat
 }
 
@@ -173,52 +200,56 @@ func queryAmdGPU() *gpuMetrics {
 
 // queryIntelDrmGPU detects Intel Arc / Iris / DRM GPUs and parses VRAM from PCI resource & fdinfo.
 func queryIntelDrmGPU() *gpuMetrics {
-	totalVRAMBytes := int64(0)
-	var activeCard string
+	intelDrmOnce.Do(func() {
+		cardMatches, _ := filepath.Glob("/sys/class/drm/card[0-9]")
+		for _, card := range cardMatches {
+			// First try Xe driver sysfs if available
+			totPath := filepath.Join(card, "device", "mem_info_vram_total")
+			if totBytes, err := readInt64FromFile(totPath); err == nil && totBytes > 0 {
+				cachedTotalVRAM = totBytes
+				cachedCard = card
+				break
+			}
 
-	cardMatches, _ := filepath.Glob("/sys/class/drm/card[0-9]")
-	for _, card := range cardMatches {
-		// First try Xe driver sysfs if available
-		totPath := filepath.Join(card, "device", "mem_info_vram_total")
-		if totBytes, err := readInt64FromFile(totPath); err == nil && totBytes > 0 {
-			totalVRAMBytes = totBytes
-			activeCard = card
-			break
-		}
-
-		// Fallback: parse PCI BAR memory resource
-		resFile := filepath.Join(card, "device", "resource")
-		if f, err := os.Open(resFile); err == nil {
-			scanner := bufio.NewScanner(f)
-			for scanner.Scan() {
-				cols := strings.Fields(scanner.Text())
-				if len(cols) >= 3 {
-					start, err1 := strconv.ParseUint(cols[0], 0, 64)
-					end, err2 := strconv.ParseUint(cols[1], 0, 64)
-					flags, err3 := strconv.ParseUint(cols[2], 0, 64)
-					if err1 == nil && err2 == nil && err3 == nil {
-						// 0x200 = IORESOURCE_MEM
-						if flags&0x200 != 0 && end > start {
-							sz := int64(end - start + 1)
-							// Check if >= 1 GB
-							if sz >= 1024*1024*1024 && sz > totalVRAMBytes {
-								totalVRAMBytes = sz
-								activeCard = card
+			// Fallback: parse PCI BAR memory resource
+			resFile := filepath.Join(card, "device", "resource")
+			if f, err := os.Open(resFile); err == nil {
+				scanner := bufio.NewScanner(f)
+				for scanner.Scan() {
+					cols := strings.Fields(scanner.Text())
+					if len(cols) >= 3 {
+						start, err1 := strconv.ParseUint(cols[0], 0, 64)
+						end, err2 := strconv.ParseUint(cols[1], 0, 64)
+						flags, err3 := strconv.ParseUint(cols[2], 0, 64)
+						if err1 == nil && err2 == nil && err3 == nil {
+							// 0x200 = IORESOURCE_MEM
+							if flags&0x200 != 0 && end > start {
+								sz := int64(end - start + 1)
+								// Check if >= 1 GB
+								if sz >= 1024*1024*1024 && sz > cachedTotalVRAM {
+									cachedTotalVRAM = sz
+									cachedCard = card
+								}
 							}
 						}
 					}
 				}
+				f.Close()
 			}
-			f.Close()
+			if cachedTotalVRAM > 0 {
+				break
+			}
 		}
-		if totalVRAMBytes > 0 {
-			break
+		if cachedTotalVRAM > 0 {
+			cachedIntelGPUName = detectIntelOrDrmGPUName(cachedCard)
 		}
-	}
+	})
 
-	if totalVRAMBytes <= 0 {
+	if cachedTotalVRAM <= 0 {
 		return nil
 	}
+
+	totalVRAMBytes := cachedTotalVRAM
 
 	// Read Used VRAM from /proc/*/fdinfo/*
 	usedVRAMBytes := int64(0)
@@ -278,8 +309,7 @@ func queryIntelDrmGPU() *gpuMetrics {
 		usedVRAMBytes += b
 	}
 
-	// Dynamically detect GPU name
-	name := detectIntelOrDrmGPUName(activeCard)
+	name := cachedIntelGPUName
 
 	return &gpuMetrics{
 		name:    name,

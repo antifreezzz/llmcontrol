@@ -283,6 +283,13 @@ func (s *Supervisor) StartProcessOnly(ctx context.Context, modelID, profileName 
 		port = 8080
 	}
 
+	// A previous instance of this same model still holds the model port, so a
+	// relaunch (profile switch or repeated start from Web UI / ESP32) would die
+	// with "couldn't bind HTTP server socket" unless we stop it first.
+	if model.Runtime != nil && model.Runtime.PID != 0 && db.IsPIDAlive(model.Runtime.PID) {
+		_ = s.stopProcessUnlocked(ctx, modelID)
+	}
+
 	// Exclusive mode: stop other active models if enabled
 	if s.exclusiveMode {
 		active, _ := s.db.GetActiveRuntimeStates(ctx)
@@ -346,16 +353,28 @@ func (s *Supervisor) StartProcessOnly(ctx context.Context, modelID, profileName 
 		_ = cmd.Wait()
 		s.mu.Lock()
 		delete(s.runningCmds, modelID)
-		_ = s.db.SetRuntimeState(context.Background(), db.RuntimeState{
-			ModelID:     modelID,
-			PID:         0,
-			Port:        port,
-			Host:        boundHost,
-			ProfileName: profileName,
-			Status:      "stopped",
-		})
+
+		// Only clear the runtime state if the row still refers to this process.
+		// A relaunch that died right away (e.g. it lost a bind race) must not mark
+		// a still running instance as stopped, or llmcontrol loses track of it and
+		// the process becomes an orphan holding the port and VRAM.
+		stillOurs := false
+		if m, err := s.db.GetModel(context.Background(), modelID); err == nil && m != nil &&
+			m.Runtime != nil && m.Runtime.PID == pid {
+			stillOurs = true
+			_ = s.db.SetRuntimeState(context.Background(), db.RuntimeState{
+				ModelID:     modelID,
+				PID:         0,
+				Port:        port,
+				Host:        boundHost,
+				ProfileName: profileName,
+				Status:      "stopped",
+			})
+		}
 		s.mu.Unlock()
-		s.broadcastEvent(fmt.Sprintf("model:%s:stopped", modelID))
+		if stillOurs {
+			s.broadcastEvent(fmt.Sprintf("model:%s:stopped", modelID))
+		}
 	}()
 
 	return cmd, nil
@@ -400,6 +419,11 @@ func (s *Supervisor) StartModel(ctx context.Context, modelID, profileName string
 				resp.Body.Close()
 				if resp.StatusCode == 200 {
 					// Ready!
+					if !db.IsPIDAlive(cmd.Process.Pid) {
+						// The instance we launched is already gone (e.g. it lost a bind race);
+						// do not report this port as served by it.
+						return
+					}
 					now := time.Now()
 					_ = s.db.SetRuntimeState(context.Background(), db.RuntimeState{
 						ModelID:     modelID,
@@ -737,15 +761,38 @@ func (s *Supervisor) startBackgroundSlotPoller() {
 		ticker := time.NewTicker(250 * time.Millisecond)
 		defer ticker.Stop()
 
+		idleTicks := 0
+		hasActive := false
+
 		for range ticker.C {
+			s.mu.Lock()
+			hasCmds := len(s.runningCmds) > 0
+			s.mu.Unlock()
+
+			if !hasActive && !hasCmds {
+				idleTicks++
+				if idleTicks < 8 { // 8 * 250ms = 2s in idle
+					continue
+				}
+				idleTicks = 0
+			}
+
 			active, err := s.db.GetActiveRuntimeStates(context.Background())
 			if err != nil || len(active) == 0 {
+				hasActive = false
 				continue
 			}
+
+			runningCount := 0
 			for _, act := range active {
 				if act.Status == "running" && act.Port > 0 {
+					runningCount++
 					_ = s.pollSlots(context.Background(), act.Port)
 				}
+			}
+			hasActive = runningCount > 0
+			if !hasActive {
+				idleTicks = 0
 			}
 		}
 	}()
