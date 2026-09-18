@@ -275,6 +275,17 @@ func (d *DB) initSchema(ctx context.Context) error {
 		})
 	}
 
+	// Seed llama-prism engine if available
+	prismBin := filepath.Join(home, "llama-prism", "bin", "llama-server")
+	if _, err := os.Stat(prismBin); err == nil {
+		_ = d.SaveEngine(ctx, Engine{
+			ID:          "llama-prism",
+			Name:        "Llama.cpp Prism (Ternary Bonsai / Hadamard)",
+			BinaryPath:  prismBin,
+			DefaultArgs: "",
+		})
+	}
+
 	return nil
 }
 
