@@ -378,14 +378,14 @@ func TestAPITunnelEndpoints(t *testing.T) {
 	}
 
 	// Config update
-	cfgBody := `{"vps_host":"new-vps.com","vps_tunnel_port":9443,"vps_token":"newtok"}`
+	cfgBody := `{"vps_host":"new-vps.com","vps_tunnel_port":9443,"vps_token":"newtok","target_model_id":"lfm25"}`
 	req3 := httptest.NewRequest("POST", "/api/tunnel/config", strings.NewReader(cfgBody))
 	rec3 := httptest.NewRecorder()
 	srv.Router().ServeHTTP(rec3, req3)
 	if rec3.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d", rec3.Code)
 	}
-	if tm.GetStatus().VPSHost != "new-vps.com" || tm.GetStatus().VPSTunnelPort != 9443 {
+	if tm.GetStatus().VPSHost != "new-vps.com" || tm.GetStatus().VPSTunnelPort != 9443 || tm.GetStatus().TargetModelID != "lfm25" {
 		t.Fatalf("update config failed: %+v", tm.GetStatus())
 	}
 }

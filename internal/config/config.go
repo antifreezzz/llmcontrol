@@ -21,6 +21,7 @@ type Config struct {
 	VPSTunnelPort      int    `json:"vps_tunnel_port"`
 	VPSToken           string `json:"vps_token"`
 	VPSRemotePort      int    `json:"vps_remote_port"`
+	VPSTargetModel     string `json:"vps_target_model,omitempty"`
 	WhisperBinaryPath  string `json:"whisper_binary_path"`
 	WhisperModelPath   string `json:"whisper_model_path"`
 	IdleTimeoutSeconds int    `json:"idle_timeout_seconds"`
@@ -44,6 +45,7 @@ func DefaultConfig() Config {
 		VPSTunnelPort:      8443,
 		VPSToken:           "",
 		VPSRemotePort:      8666,
+		VPSTargetModel:     "",
 		WhisperBinaryPath:  "/home/antifreezzz/whisper.cpp/build-vk/bin/whisper-cli",
 		WhisperModelPath:   "/home/antifreezzz/whisper.cpp/models/ggml-tiny.bin",
 		IdleTimeoutSeconds: 300,
@@ -51,18 +53,20 @@ func DefaultConfig() Config {
 	}
 }
 
+func GetConfigPath(customPath string) string {
+	if customPath != "" {
+		return customPath
+	}
+	if _, err := os.Stat("config.json"); err == nil {
+		return "config.json"
+	}
+	home, _ := os.UserHomeDir()
+	return filepath.Join(home, ".llmcontrol", "config.json")
+}
+
 func LoadConfig(customPath string) (Config, error) {
 	cfg := DefaultConfig()
-
-	configPath := customPath
-	if configPath == "" {
-		if _, err := os.Stat("config.json"); err == nil {
-			configPath = "config.json"
-		} else {
-			home, _ := os.UserHomeDir()
-			configPath = filepath.Join(home, ".llmcontrol", "config.json")
-		}
-	}
+	configPath := GetConfigPath(customPath)
 
 	data, err := os.ReadFile(configPath)
 	if err != nil {
@@ -127,6 +131,9 @@ func LoadConfig(customPath string) (Config, error) {
 		if p, err := strconv.Atoi(envVPSRemotePort); err == nil && p > 0 {
 			cfg.VPSRemotePort = p
 		}
+	}
+	if envVPSTargetModel := os.Getenv("VPS_TARGET_MODEL"); envVPSTargetModel != "" {
+		cfg.VPSTargetModel = envVPSTargetModel
 	}
 	if envWhisperBin := os.Getenv("WHISPER_BINARY_PATH"); envWhisperBin != "" {
 		cfg.WhisperBinaryPath = envWhisperBin

@@ -14,9 +14,11 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
+	"github.com/antifreezzz/llmcontrol/internal/config"
 	"github.com/antifreezzz/llmcontrol/internal/db"
 	"github.com/antifreezzz/llmcontrol/internal/downloader"
 	"github.com/antifreezzz/llmcontrol/internal/stt"
@@ -32,11 +34,17 @@ type Server struct {
 	mux                *http.ServeMux
 	sttService         *stt.Service
 	tunnelMgr          *tunnel.ClientManager
+	configPath         string
 	wakeOnRequest      bool
 	idleTimeoutSeconds int
 	lastActivityUnix   int64
-	idleTicker         *time.Ticker
-	idleStopChan       chan struct{}
+	// Per-model activity bookkeeping. Traffic sent straight to the model port
+	// never reaches the daemon, so each model is tracked on its own signals.
+	activityMu    sync.Mutex
+	modelActivity map[string]int64
+	modelWorkSig  map[string]string
+	idleTicker    *time.Ticker
+	idleStopChan  chan struct{}
 }
 
 type StatusResponse struct {
@@ -63,6 +71,8 @@ func NewServer(database *db.DB, sup *supervisor.Supervisor, dl *downloader.Manag
 		idleTimeoutSeconds: 300,
 		lastActivityUnix:   time.Now().Unix(),
 		idleStopChan:       make(chan struct{}),
+		modelActivity:      make(map[string]int64),
+		modelWorkSig:       make(map[string]string),
 	}
 	s.registerRoutes()
 	s.startIdleChecker()
@@ -80,6 +90,48 @@ func (s *Server) SetTunnelManager(tm *tunnel.ClientManager) {
 func (s *Server) SetOnDemandConfig(wake bool, idleSeconds int) {
 	s.wakeOnRequest = wake
 	s.idleTimeoutSeconds = idleSeconds
+}
+
+func (s *Server) SetConfigPath(p string) {
+	s.configPath = p
+}
+
+// markModelActivity records that modelID served something just now.
+func (s *Server) markModelActivity(modelID string) {
+	if modelID == "" {
+		return
+	}
+	s.activityMu.Lock()
+	s.modelActivity[modelID] = time.Now().Unix()
+	s.activityMu.Unlock()
+}
+
+// modelActivityAt returns the last activity stamp recorded for modelID.
+func (s *Server) modelActivityAt(modelID string) (int64, bool) {
+	s.activityMu.Lock()
+	defer s.activityMu.Unlock()
+	v, ok := s.modelActivity[modelID]
+	return v, ok
+}
+
+// clearModelActivity forgets a model that is no longer running.
+func (s *Server) clearModelActivity(modelID string) {
+	s.activityMu.Lock()
+	delete(s.modelActivity, modelID)
+	delete(s.modelWorkSig, modelID)
+	s.activityMu.Unlock()
+}
+
+// modelWorkChanged stores the llama-server state signature for modelID and
+// reports whether the server did anything since the previous observation. This
+// is what makes a short request on the model port visible to the idle checker
+// even when it finished between two polls.
+func (s *Server) modelWorkChanged(modelID, sig string) bool {
+	s.activityMu.Lock()
+	defer s.activityMu.Unlock()
+	prev, ok := s.modelWorkSig[modelID]
+	s.modelWorkSig[modelID] = sig
+	return ok && prev != sig
 }
 
 func (s *Server) Close() {
@@ -113,6 +165,7 @@ func (s *Server) corsMiddleware(next http.Handler) http.Handler {
 func (s *Server) registerRoutes() {
 	// API routes
 	s.mux.HandleFunc("GET /api/status", s.handleStatus)
+	s.mux.HandleFunc("GET /api/engines", s.handleListEngines)
 	s.mux.HandleFunc("GET /api/models", s.handleListModels)
 	s.mux.HandleFunc("POST /api/models", s.handleCreateModel)
 	s.mux.HandleFunc("GET /api/models/{id}", s.handleGetModel)
@@ -216,6 +269,16 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 	resp := s.buildStatusResponse(r.Context())
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(resp)
+}
+
+func (s *Server) handleListEngines(w http.ResponseWriter, r *http.Request) {
+	engines, err := s.db.ListEngines(r.Context())
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(engines)
 }
 
 func (s *Server) handleListModels(w http.ResponseWriter, r *http.Request) {
@@ -468,6 +531,12 @@ func (s *Server) handleStartModel(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Starting a model counts as activity, otherwise the idle checker would
+	// auto-stop a freshly started model as soon as the daemon uptime exceeds
+	// idle_timeout_seconds.
+	atomic.StoreInt64(&s.lastActivityUnix, time.Now().Unix())
+	s.markModelActivity(id)
+
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]string{"status": "starting", "model_id": id})
 }
@@ -479,6 +548,7 @@ func (s *Server) handleStopModel(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
+	s.clearModelActivity(id)
 	_ = json.NewEncoder(w).Encode(map[string]string{"status": "stopped", "model_id": id})
 }
 
@@ -637,10 +707,10 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 			flusher.Flush()
 			sendTelemetry()
 		case <-ticker.C:
-			status := s.buildStatusResponse(ctx)
-			isBusy := status.LLMMetrics != nil && (status.LLMMetrics.Phase == "prompt_eval" || status.LLMMetrics.Phase == "generating")
-			if isBusy {
+			idleTickCount++
+			if idleTickCount >= 4 { // 4 * 250ms = 1.0s in idle
 				idleTickCount = 0
+				status := s.buildStatusResponse(ctx)
 				payload, err := json.Marshal(map[string]interface{}{
 					"type":   "telemetry",
 					"status": status,
@@ -650,8 +720,9 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 					flusher.Flush()
 				}
 			} else {
-				idleTickCount++
-				if idleTickCount >= 4 { // 4 * 250ms = 1.0s in idle
+				status := s.buildStatusResponse(ctx)
+				isBusy := status.LLMMetrics != nil && (status.LLMMetrics.Phase == "prompt_eval" || status.LLMMetrics.Phase == "generating")
+				if isBusy {
 					idleTickCount = 0
 					payload, err := json.Marshal(map[string]interface{}{
 						"type":   "telemetry",
@@ -946,167 +1017,202 @@ func (s *Server) handleCancelTraining(w http.ResponseWriter, r *http.Request) {
 // ----------------------------------------------------------------------------
 
 func (s *Server) handleOpenAIProxy(w http.ResponseWriter, r *http.Request) {
+	// Handle GET /v1/models even if no model is running
+	if r.Method == http.MethodGet && strings.TrimSuffix(r.URL.Path, "/") == "/v1/models" {
+		active, _ := s.db.GetActiveRuntimeStates(r.Context())
+		hasRunning := false
+		for _, a := range active {
+			if a.Status == "running" && a.Port > 0 {
+				hasRunning = true
+				break
+			}
+		}
+		if !hasRunning {
+			models, err := s.db.ListModels(r.Context())
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+			type ModelItem struct {
+				ID      string `json:"id"`
+				Object  string `json:"object"`
+				Created int64  `json:"created"`
+				OwnedBy string `json:"owned_by"`
+			}
+			var items []ModelItem
+			for _, m := range models {
+				items = append(items, ModelItem{
+					ID:      m.ID,
+					Object:  "model",
+					Created: time.Now().Unix(),
+					OwnedBy: "llmcontrol",
+				})
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"object": "list",
+				"data":   items,
+			})
+			return
+		}
+	}
+
+	var bodyBytes []byte
+	if r.Body != nil {
+		bodyBytes, _ = io.ReadAll(r.Body)
+		r.Body = io.NopCloser(bytes.NewReader(bodyBytes))
+	}
+
+	var reqBody struct {
+		Model string `json:"model"`
+	}
+	if len(bodyBytes) > 0 {
+		_ = json.Unmarshal(bodyBytes, &reqBody)
+	}
+
+	// 1. Determine desired model and profile
+	desiredModelID := ""
+	desiredProfile := ""
+
+	// Priority 1: Check if request explicitly specified a registered model in DB
+	if reqBody.Model != "" && reqBody.Model != "auto" {
+		if m, _ := s.db.GetModel(r.Context(), reqBody.Model); m != nil {
+			desiredModelID = m.ID
+			desiredProfile = m.DefaultProfile
+		}
+	}
+
+	// Priority 2: If model wasn't explicitly matched from request, check VPS tunnel target model
+	if desiredModelID == "" && s.tunnelMgr != nil {
+		st := s.tunnelMgr.GetStatus()
+		if st.TargetModelID != "" && st.TargetModelID != "auto" {
+			if m, _ := s.db.GetModel(r.Context(), st.TargetModelID); m != nil {
+				desiredModelID = m.ID
+				desiredProfile = st.TargetProfile
+				if desiredProfile == "" {
+					desiredProfile = m.DefaultProfile
+				}
+			}
+		}
+	}
+
 	// Find active running model
 	active, _ := s.db.GetActiveRuntimeStates(r.Context())
-	var activePort int
-
+	var runningModelID string
+	var runningPort int
 	for _, a := range active {
 		if a.Status == "running" && a.Port > 0 {
-			activePort = a.Port
+			runningModelID = a.ModelID
+			runningPort = a.Port
 			break
 		}
 	}
 
-	// Handle GET /v1/models even if no model is running
-	if r.Method == http.MethodGet && strings.TrimSuffix(r.URL.Path, "/") == "/v1/models" && activePort == 0 {
-		models, err := s.db.ListModels(r.Context())
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
-		type ModelItem struct {
-			ID      string `json:"id"`
-			Object  string `json:"object"`
-			Created int64  `json:"created"`
-			OwnedBy string `json:"owned_by"`
-		}
-		var items []ModelItem
-		for _, m := range models {
-			items = append(items, ModelItem{
-				ID:      m.ID,
-				Object:  "model",
-				Created: time.Now().Unix(),
-				OwnedBy: "llmcontrol",
-			})
-		}
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]interface{}{
-			"object": "list",
-			"data":   items,
-		})
-		return
+	// Priority 3: If no specific model is targeted, but some model is already running, use it
+	if desiredModelID == "" && runningPort > 0 {
+		desiredModelID = runningModelID
 	}
 
-	// If no model is currently running, check wake-on-request
-	if activePort == 0 {
-		if !s.wakeOnRequest {
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusServiceUnavailable)
-			_ = json.NewEncoder(w).Encode(map[string]interface{}{
-				"error": map[string]interface{}{
-					"message": "No model is running and wake_on_request is disabled",
-					"type":    "server_error",
-				},
-			})
-			return
-		}
-
-		// Determine target model to start
-		targetModel := ""
-		targetProfile := ""
-
-		var bodyBytes []byte
-		if r.Body != nil {
-			bodyBytes, _ = io.ReadAll(r.Body)
-			r.Body = io.NopCloser(bytes.NewReader(bodyBytes))
-		}
-
-		var reqBody struct {
-			Model string `json:"model"`
-		}
-		if len(bodyBytes) > 0 {
-			_ = json.Unmarshal(bodyBytes, &reqBody)
-		}
-
-		if reqBody.Model != "" && reqBody.Model != "auto" {
-			if m, _ := s.db.GetModel(r.Context(), reqBody.Model); m != nil {
-				targetModel = m.ID
-				targetProfile = m.DefaultProfile
-			}
-		}
-
-		if targetModel == "" && s.tunnelMgr != nil {
-			st := s.tunnelMgr.GetStatus()
-			if st.TargetModelID != "" {
-				targetModel = st.TargetModelID
-				targetProfile = st.TargetProfile
-			}
-		}
-
-		if targetModel == "" {
-			models, _ := s.db.ListModels(r.Context())
-			for _, m := range models {
-				if m.IsFavorite {
-					targetModel = m.ID
-					targetProfile = m.DefaultProfile
-					break
-				}
-			}
-			if targetModel == "" && len(models) > 0 {
-				targetModel = models[0].ID
-				targetProfile = models[0].DefaultProfile
-			}
-		}
-
-		if targetModel == "" {
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusServiceUnavailable)
-			_ = json.NewEncoder(w).Encode(map[string]interface{}{
-				"error": map[string]interface{}{
-					"message": "No model available to wake up",
-					"type":    "server_error",
-				},
-			})
-			return
-		}
-
-		log.Printf("[ondemand] waking up model %s (profile: %s) for incoming request...", targetModel, targetProfile)
-		if err := s.supervisor.StartModel(r.Context(), targetModel, targetProfile); err != nil {
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusInternalServerError)
-			_ = json.NewEncoder(w).Encode(map[string]interface{}{
-				"error": map[string]interface{}{
-					"message": fmt.Sprintf("Failed to wake model %s: %v", targetModel, err),
-					"type":    "server_error",
-				},
-			})
-			return
-		}
-
-		model, _ := s.db.GetModel(r.Context(), targetModel)
-		expectedPort := 8080
-		if model != nil && model.DefaultPort > 0 {
-			expectedPort = model.DefaultPort
-		}
-
-		ready := false
-		for i := 0; i < 60; i++ {
-			time.Sleep(800 * time.Millisecond)
-			client := &http.Client{Timeout: 500 * time.Millisecond}
-			resp, err := client.Get(fmt.Sprintf("http://127.0.0.1:%d/health", expectedPort))
-			if err == nil && resp.StatusCode == 200 {
-				resp.Body.Close()
-				ready = true
-				activePort = expectedPort
+	// Priority 4: Fallback to favorite model, or the first available model
+	if desiredModelID == "" {
+		models, _ := s.db.ListModels(r.Context())
+		for _, m := range models {
+			if m.IsFavorite {
+				desiredModelID = m.ID
+				desiredProfile = m.DefaultProfile
 				break
 			}
-			if resp != nil {
-				resp.Body.Close()
-			}
 		}
+		if desiredModelID == "" && len(models) > 0 {
+			desiredModelID = models[0].ID
+			desiredProfile = models[0].DefaultProfile
+		}
+	}
 
-		if !ready {
+	var activePort int
+	// If the desired model is already running, use its port directly
+	if runningPort > 0 && runningModelID == desiredModelID {
+		activePort = runningPort
+	} else {
+		// Need to start or switch to desiredModelID
+		if desiredModelID == "" {
 			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusGatewayTimeout)
+			w.WriteHeader(http.StatusServiceUnavailable)
 			_ = json.NewEncoder(w).Encode(map[string]interface{}{
 				"error": map[string]interface{}{
-					"message": "Timed out waiting for model to load and start",
+					"message": "No model available to handle request",
 					"type":    "server_error",
 				},
 			})
 			return
 		}
+
+		if !s.wakeOnRequest {
+			if runningPort > 0 {
+				activePort = runningPort
+			} else {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusServiceUnavailable)
+				_ = json.NewEncoder(w).Encode(map[string]interface{}{
+					"error": map[string]interface{}{
+						"message": "No model is running and wake_on_request is disabled",
+						"type":    "server_error",
+					},
+				})
+				return
+			}
+		} else {
+			log.Printf("[ondemand] waking up model %s (profile: %s) for incoming request...", desiredModelID, desiredProfile)
+			if err := s.supervisor.StartModel(r.Context(), desiredModelID, desiredProfile); err != nil {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusInternalServerError)
+				_ = json.NewEncoder(w).Encode(map[string]interface{}{
+					"error": map[string]interface{}{
+						"message": fmt.Sprintf("Failed to wake model %s: %v", desiredModelID, err),
+						"type":    "server_error",
+					},
+				})
+				return
+			}
+
+			model, _ := s.db.GetModel(r.Context(), desiredModelID)
+			expectedPort := 8080
+			if model != nil && model.DefaultPort > 0 {
+				expectedPort = model.DefaultPort
+			}
+
+			ready := false
+			for i := 0; i < 60; i++ {
+				time.Sleep(800 * time.Millisecond)
+				client := &http.Client{Timeout: 500 * time.Millisecond}
+				resp, err := client.Get(fmt.Sprintf("http://127.0.0.1:%d/health", expectedPort))
+				if err == nil && resp.StatusCode == 200 {
+					resp.Body.Close()
+					ready = true
+					activePort = expectedPort
+					break
+				}
+				if resp != nil {
+					resp.Body.Close()
+				}
+			}
+
+			if !ready {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusGatewayTimeout)
+				_ = json.NewEncoder(w).Encode(map[string]interface{}{
+					"error": map[string]interface{}{
+						"message": fmt.Sprintf("Timed out waiting for model %s to load and start", desiredModelID),
+						"type":    "server_error",
+					},
+				})
+				return
+			}
+		}
 	}
+
+	// Count the request against the model that serves it.
+	s.markModelActivity(desiredModelID)
 
 	// Update last activity timestamp for idle auto-stop
 	atomic.StoreInt64(&s.lastActivityUnix, time.Now().Unix())
@@ -1135,21 +1241,44 @@ func (s *Server) startIdleChecker() {
 				if timeout <= 0 {
 					continue
 				}
-				last := atomic.LoadInt64(&s.lastActivityUnix)
-				if last == 0 {
+
+				active, err := s.db.GetActiveRuntimeStates(context.Background())
+				if err != nil || len(active) == 0 {
 					continue
 				}
-				if time.Now().Unix()-last > int64(timeout) {
-					active, err := s.db.GetActiveRuntimeStates(context.Background())
-					if err == nil && len(active) > 0 {
-						for _, act := range active {
-							if act.Status == "running" {
-								log.Printf("[ondemand] idle timeout expired (%ds without requests), auto-stopping model %s...", timeout, act.ModelID)
-								_ = s.supervisor.StopModel(context.Background(), act.ModelID)
+
+				for _, act := range active {
+					if act.Status != "running" || act.Port <= 0 {
+						continue
+					}
+
+					// Traffic on the model port never reaches the daemon proxy, so ask
+					// llama-server itself what it is doing: work in progress or any
+					// state change counts as activity.
+					if sig, busy, ok := s.supervisor.ServerActivity(context.Background(), act.Port); ok {
+						if busy || s.modelWorkChanged(act.ModelID, sig) {
+							s.markModelActivity(act.ModelID)
+						}
+					}
+
+					last, known := s.modelActivityAt(act.ModelID)
+					if !known {
+						switch {
+						case act.StartedAt != nil:
+							last, known = act.StartedAt.Unix(), true
+						default:
+							if g := atomic.LoadInt64(&s.lastActivityUnix); g > 0 {
+								last, known = g, true
 							}
 						}
-						atomic.StoreInt64(&s.lastActivityUnix, 0)
 					}
+					if !known || time.Now().Unix()-last <= int64(timeout) {
+						continue
+					}
+
+					log.Printf("[ondemand] idle timeout expired (%ds without activity) for model %s, auto-stopping...", timeout, act.ModelID)
+					_ = s.supervisor.StopModel(context.Background(), act.ModelID)
+					s.clearModelActivity(act.ModelID)
 				}
 			}
 		}
@@ -1242,6 +1371,13 @@ func (s *Server) handleTunnelStart(w http.ResponseWriter, r *http.Request) {
 		_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
 		return
 	}
+
+	cfgPath := config.GetConfigPath(s.configPath)
+	if cfg, err := config.LoadConfig(cfgPath); err == nil {
+		cfg.VPSTargetModel = req.ModelID
+		_ = config.SaveConfig(cfgPath, cfg)
+	}
+
 	_ = json.NewEncoder(w).Encode(s.tunnelMgr.GetStatus())
 }
 
@@ -1267,13 +1403,34 @@ func (s *Server) handleTunnelConfig(w http.ResponseWriter, r *http.Request) {
 		VPSTunnelPort int    `json:"vps_tunnel_port"`
 		VPSRemotePort int    `json:"vps_remote_port"`
 		VPSToken      string `json:"vps_token"`
+		TargetModelID string `json:"target_model_id"`
+		TargetProfile string `json:"target_profile"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		w.WriteHeader(http.StatusBadRequest)
 		_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
 		return
 	}
-	s.tunnelMgr.UpdateConfig(req.VPSHost, req.VPSTunnelPort, req.VPSRemotePort, req.VPSToken)
+	s.tunnelMgr.UpdateConfig(req.VPSHost, req.VPSTunnelPort, req.VPSRemotePort, req.VPSToken, req.TargetModelID, req.TargetProfile)
+
+	cfgPath := config.GetConfigPath(s.configPath)
+	if cfg, err := config.LoadConfig(cfgPath); err == nil {
+		if req.VPSHost != "" {
+			cfg.VPSHost = req.VPSHost
+		}
+		if req.VPSTunnelPort > 0 {
+			cfg.VPSTunnelPort = req.VPSTunnelPort
+		}
+		if req.VPSRemotePort > 0 {
+			cfg.VPSRemotePort = req.VPSRemotePort
+		}
+		if req.VPSToken != "" {
+			cfg.VPSToken = req.VPSToken
+		}
+		cfg.VPSTargetModel = req.TargetModelID
+		_ = config.SaveConfig(cfgPath, cfg)
+	}
+
 	_ = json.NewEncoder(w).Encode(s.tunnelMgr.GetStatus())
 }
 
@@ -1306,12 +1463,20 @@ func (s *Server) handleUpdateOnDemand(w http.ResponseWriter, r *http.Request) {
 	if req.IdleTimeoutSeconds != nil {
 		s.idleTimeoutSeconds = *req.IdleTimeoutSeconds
 	}
+
+	cfgPath := config.GetConfigPath(s.configPath)
+	if cfg, err := config.LoadConfig(cfgPath); err == nil {
+		if req.WakeOnRequest != nil {
+			cfg.WakeOnRequest = *req.WakeOnRequest
+		}
+		if req.IdleTimeoutSeconds != nil {
+			cfg.IdleTimeoutSeconds = *req.IdleTimeoutSeconds
+		}
+		_ = config.SaveConfig(cfgPath, cfg)
+	}
+
 	_ = json.NewEncoder(w).Encode(map[string]interface{}{
 		"wake_on_request":      s.wakeOnRequest,
 		"idle_timeout_seconds": s.idleTimeoutSeconds,
 	})
 }
-
-
-
-

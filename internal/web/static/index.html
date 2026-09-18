@@ -826,6 +826,7 @@
             <select id="m-engine">
               <option value="llama-vk">Llama.cpp Vulkan (Intel Arc / GPU)</option>
               <option value="llama-sycl">Llama.cpp Intel SYCL (Level Zero / XMX)</option>
+              <option value="llama-prism">Llama.cpp Prism (Ternary Bonsai / Hadamard)</option>
               <option value="llama-cpu">Llama.cpp CPU (Host AVX / Zen4)</option>
               <option value="sd-vk">Stable Diffusion Vulkan (sd-cli)</option>
             </select>
@@ -1150,12 +1151,14 @@
         <button onclick="closeDownloaderModal()">Закрыть</button>
       </div>
     </div>
+  </div>
+
   <!-- Tunnel Settings Modal -->
-  <div class="modal-backdrop" id="tunnel-modal" style="display: none;">
+  <div class="modal-backdrop" id="tunnel-modal" style="display: none;" onclick="if(event.target === this) closeTunnelModal()">
     <div class="modal" style="max-width: 580px;">
       <div class="modal-header">
         <h2>☁️ VPS Reverse Tunnel</h2>
-        <button class="close-btn" onclick="closeTunnelModal()">✕</button>
+        <button class="card-action-icon" onclick="closeTunnelModal()">✕</button>
       </div>
       <div class="modal-body" style="display: flex; flex-direction: column; gap: 14px;">
         <div style="font-size: 13px; color: var(--text-muted); line-height: 1.5;">
@@ -1211,11 +1214,11 @@
   </div>
 
   <!-- On-Demand Modal -->
-  <div class="modal-backdrop" id="ondemand-modal" style="display: none;">
+  <div class="modal-backdrop" id="ondemand-modal" style="display: none;" onclick="if(event.target === this) closeOnDemandModal()">
     <div class="modal" style="max-width: 500px;">
       <div class="modal-header">
         <h2>⚡ Режим On-Demand (Scale to Zero)</h2>
-        <button class="close-btn" onclick="closeOnDemandModal()">✕</button>
+        <button class="card-action-icon" onclick="closeOnDemandModal()">✕</button>
       </div>
       <div class="modal-body" style="display: flex; flex-direction: column; gap: 16px;">
         <div style="font-size: 13px; color: var(--text-muted); line-height: 1.5;">
@@ -1354,12 +1357,21 @@
 
     async function loadAll() {
       try {
-        const [statusRes, modelsRes, tunnelRes, ondemandRes] = await Promise.all([
+        const [statusRes, modelsRes, tunnelRes, ondemandRes, enginesRes] = await Promise.all([
           fetch('/api/status').then(r => r.json()),
           fetch('/api/models').then(r => r.json()),
           fetch('/api/tunnel/status').then(r => r.json()).catch(() => null),
-          fetch('/api/ondemand').then(r => r.json()).catch(() => null)
+          fetch('/api/ondemand').then(r => r.json()).catch(() => null),
+          fetch('/api/engines').then(r => r.json()).catch(() => null)
         ]);
+        if (Array.isArray(enginesRes) && enginesRes.length > 0) {
+          const sel = document.getElementById('m-engine');
+          if (sel) {
+            const cur = sel.value;
+            sel.innerHTML = enginesRes.map(e => `<option value="${e.id}">${e.name || e.id}</option>`).join('');
+            if (cur) sel.value = cur;
+          }
+        }
         allModels = modelsRes;
         if (tunnelRes) {
           currentTunnelStatus = tunnelRes;
@@ -1506,14 +1518,31 @@
         if (currentTunnelStatus.vps_host) document.getElementById('tunnel-host-input').value = currentTunnelStatus.vps_host;
         if (currentTunnelStatus.vps_tunnel_port) document.getElementById('tunnel-ctl-port-input').value = currentTunnelStatus.vps_tunnel_port;
         if (currentTunnelStatus.vps_remote_port) document.getElementById('tunnel-bind-port-input').value = currentTunnelStatus.vps_remote_port;
+        if (sel && currentTunnelStatus.target_model_id && !preselectModelId) sel.value = currentTunnelStatus.target_model_id;
         updateTunnelUI(currentTunnelStatus);
+      } else {
+        fetch('/api/tunnel/status')
+          .then(r => r.json())
+          .then(res => {
+            currentTunnelStatus = res;
+            if (res.vps_host) document.getElementById('tunnel-host-input').value = res.vps_host;
+            if (res.vps_tunnel_port) document.getElementById('tunnel-ctl-port-input').value = res.vps_tunnel_port;
+            if (res.vps_remote_port) document.getElementById('tunnel-bind-port-input').value = res.vps_remote_port;
+            if (sel && res.target_model_id && !preselectModelId) sel.value = res.target_model_id;
+            updateTunnelUI(res);
+          })
+          .catch(() => {});
       }
+      modal.classList.add('open');
       modal.style.display = 'flex';
     }
 
     function closeTunnelModal() {
       const modal = document.getElementById('tunnel-modal');
-      if (modal) modal.style.display = 'none';
+      if (modal) {
+        modal.classList.remove('open');
+        modal.style.display = 'none';
+      }
     }
 
     async function saveTunnelConfig() {
@@ -1521,6 +1550,7 @@
       const ctlPort = parseInt(document.getElementById('tunnel-ctl-port-input').value) || 8443;
       const bindPort = parseInt(document.getElementById('tunnel-bind-port-input').value) || 8666;
       const token = document.getElementById('tunnel-token-input').value.trim();
+      const targetModel = document.getElementById('tunnel-model-select')?.value || '';
 
       try {
         const res = await fetch('/api/tunnel/config', {
@@ -1530,11 +1560,13 @@
             vps_host: host,
             vps_tunnel_port: ctlPort,
             vps_remote_port: bindPort,
-            vps_token: token
+            vps_token: token,
+            target_model_id: targetModel
           })
         }).then(r => r.json());
         currentTunnelStatus = res;
         updateTunnelUI(res);
+        renderModels(allModels);
         alert("Настройки туннеля сохранены!");
       } catch (e) {
         alert("Ошибка сохранения: " + e.message);
@@ -1581,14 +1613,20 @@
     function openOnDemandModal() {
       const modal = document.getElementById('ondemand-modal');
       if (!modal) return;
-      document.getElementById('ondemand-wake-input').checked = currentOnDemand.wake_on_request;
-      document.getElementById('ondemand-timeout-input').value = currentOnDemand.idle_timeout_seconds;
+      if (currentOnDemand) {
+        document.getElementById('ondemand-wake-input').checked = !!currentOnDemand.wake_on_request;
+        document.getElementById('ondemand-timeout-input').value = currentOnDemand.idle_timeout_seconds ?? 300;
+      }
+      modal.classList.add('open');
       modal.style.display = 'flex';
     }
 
     function closeOnDemandModal() {
       const modal = document.getElementById('ondemand-modal');
-      if (modal) modal.style.display = 'none';
+      if (modal) {
+        modal.classList.remove('open');
+        modal.style.display = 'none';
+      }
     }
 
     async function saveOnDemandConfig() {
